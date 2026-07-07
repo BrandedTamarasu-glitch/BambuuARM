@@ -96,6 +96,10 @@ Unsupported behavior:
 - Agora/cloud video.
 - Direct RTSP unless a printer advertises a usable `ipcam.rtsp_url`.
 
+License:
+
+This project is released under the MIT License. See [LICENSE](LICENSE).
+
 Troubleshooting:
 
 - If Studio does not load the plugin, run `./verify-exports.sh` and check the
