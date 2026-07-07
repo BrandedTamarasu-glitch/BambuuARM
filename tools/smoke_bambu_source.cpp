@@ -49,5 +49,5 @@ int main(int argc, char **argv)
         destroy(tunnel);
     }
 
-    return create_rc == 0 && open_rc != -2 ? 0 : 1;
+    return create_rc == 0 && open_rc == 3 ? 0 : 1;
 }

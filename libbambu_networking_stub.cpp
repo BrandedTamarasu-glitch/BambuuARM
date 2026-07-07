@@ -28,7 +28,10 @@
 
 #include <curl/curl.h>
 #include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
 #include <openssl/ssl.h>
+#include <openssl/x509.h>
 
 namespace Slic3r {
 class BBLModelTask;
@@ -100,6 +103,15 @@ std::string log_path(const Agent *agent = nullptr)
     return "/tmp/bambu-network-arm64-stub.log";
 }
 
+std::string trust_store_path(const Agent *agent)
+{
+    if (agent && !agent->config_dir.empty()) return agent->config_dir + "/arm64_trusted_tls_pins.txt";
+    const char *home = std::getenv("HOME");
+    if (home && *home)
+        return std::string(home) + "/.var/app/com.bambulab.BambuStudio/config/BambuStudio/arm64_trusted_tls_pins.txt";
+    return "/tmp/arm64_trusted_tls_pins.txt";
+}
+
 void log_line(const Agent *agent, const std::string &line)
 {
     std::lock_guard<std::mutex> lock(g_log_mutex);
@@ -116,6 +128,192 @@ void log_call(const char *name)
 void log_call(const Agent *agent, const char *name)
 {
     log_line(agent, std::string(name));
+}
+
+std::string masked_len(const std::string &value)
+{
+    if (value.empty()) return "(empty)";
+    return "len=" + std::to_string(value.size());
+}
+
+std::string to_hex(const unsigned char *data, unsigned int size)
+{
+    static constexpr char hex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(size * 2);
+    for (unsigned int i = 0; i < size; ++i) {
+        out.push_back(hex[data[i] >> 4]);
+        out.push_back(hex[data[i] & 0x0f]);
+    }
+    return out;
+}
+
+std::string base64_encode(const unsigned char *data, int size)
+{
+    if (size <= 0) return {};
+    std::string out(static_cast<size_t>(4 * ((size + 2) / 3)), '\0');
+    const int written = EVP_EncodeBlock(reinterpret_cast<unsigned char *>(&out[0]), data, size);
+    if (written <= 0) return {};
+    out.resize(static_cast<size_t>(written));
+    return out;
+}
+
+std::string cert_fingerprint_hex(X509 *cert)
+{
+    if (!cert) return {};
+    unsigned char digest[EVP_MAX_MD_SIZE]{};
+    unsigned int digest_len = 0;
+    if (X509_digest(cert, EVP_sha256(), digest, &digest_len) != 1) return {};
+    return to_hex(digest, digest_len);
+}
+
+std::string cert_spki_pin(X509 *cert)
+{
+    if (!cert) return {};
+    X509_PUBKEY *pubkey = X509_get_X509_PUBKEY(cert);
+    if (!pubkey) return {};
+    int der_len = i2d_X509_PUBKEY(pubkey, nullptr);
+    if (der_len <= 0) return {};
+    std::vector<unsigned char> der(static_cast<size_t>(der_len));
+    unsigned char *cursor = der.data();
+    if (i2d_X509_PUBKEY(pubkey, &cursor) != der_len) return {};
+    unsigned char digest[EVP_MAX_MD_SIZE]{};
+    unsigned int digest_len = 0;
+    if (EVP_Digest(der.data(), der.size(), digest, &digest_len, EVP_sha256(), nullptr) != 1) return {};
+    return "sha256//" + base64_encode(digest, static_cast<int>(digest_len));
+}
+
+bool check_or_store_pin_file(const std::string &path, const std::string &key,
+                             const std::string &fingerprint, std::string &error)
+{
+    {
+        std::ifstream in(path);
+        std::string line;
+        while (std::getline(in, line)) {
+            std::istringstream parts(line);
+            std::string stored_key;
+            std::string stored_fingerprint;
+            if (parts >> stored_key >> stored_fingerprint) {
+                if (stored_key == key) {
+                    if (stored_fingerprint == fingerprint) return true;
+                    error = "peer certificate changed";
+                    return false;
+                }
+            }
+        }
+    }
+
+    std::ofstream out(path, std::ios::app);
+    if (!out) {
+        error = "cannot store peer certificate pin";
+        return false;
+    }
+    out << key << " " << fingerprint << "\n";
+    return true;
+}
+
+bool write_cert_pem(const std::string &path, X509 *cert, std::string &error)
+{
+    FILE *file = std::fopen(path.c_str(), "w");
+    if (!file) {
+        error = "cannot write peer certificate";
+        return false;
+    }
+    const bool ok = PEM_write_X509(file, cert) == 1;
+    std::fclose(file);
+    if (!ok) {
+        error = "cannot encode peer certificate";
+        return false;
+    }
+    return true;
+}
+
+bool verify_or_trust_peer(Agent *agent, SSL *ssl, const std::string &host, int port, std::string &error)
+{
+    X509 *cert = SSL_get_peer_certificate(ssl);
+    if (!cert) {
+        error = "missing peer certificate";
+        return false;
+    }
+    std::string fingerprint = cert_fingerprint_hex(cert);
+    X509_free(cert);
+    if (fingerprint.empty()) {
+        error = "cannot fingerprint peer certificate";
+        return false;
+    }
+    const std::string key = host + ":" + std::to_string(port);
+    if (!check_or_store_pin_file(trust_store_path(agent), key, fingerprint, error)) return false;
+    return true;
+}
+
+bool fetch_tls_pin(Agent *agent, const std::string &host, int port,
+                   std::string &spki_pin, std::string &ca_cert_path, std::string &error)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        error = "socket failed";
+        return false;
+    }
+    timeval tv{};
+    tv.tv_sec = 5;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1 ||
+        connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
+        close(fd);
+        error = "pin preflight connect failed";
+        return false;
+    }
+
+    SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+    SSL *ssl = ctx ? SSL_new(ctx) : nullptr;
+    if (!ctx || !ssl) {
+        if (ssl) SSL_free(ssl);
+        if (ctx) SSL_CTX_free(ctx);
+        close(fd);
+        error = "pin preflight SSL init failed";
+        return false;
+    }
+    SSL_set_fd(ssl, fd);
+    SSL_set_tlsext_host_name(ssl, host.c_str());
+    if (SSL_connect(ssl) != 1) {
+        SSL_free(ssl);
+        SSL_CTX_free(ctx);
+        close(fd);
+        error = "pin preflight SSL_connect failed";
+        return false;
+    }
+    X509 *cert = SSL_get_peer_certificate(ssl);
+    if (!cert) {
+        SSL_free(ssl);
+        SSL_CTX_free(ctx);
+        close(fd);
+        error = "pin preflight missing certificate";
+        return false;
+    }
+    const std::string fingerprint = cert_fingerprint_hex(cert);
+    spki_pin = cert_spki_pin(cert);
+    if (fingerprint.empty() || spki_pin.empty()) {
+        X509_free(cert);
+        SSL_free(ssl);
+        SSL_CTX_free(ctx);
+        close(fd);
+        error = "pin preflight fingerprint failed";
+        return false;
+    }
+    const std::string key = host + ":" + std::to_string(port);
+    const bool trusted = check_or_store_pin_file(trust_store_path(agent), key, fingerprint, error);
+    ca_cert_path = trust_store_path(agent) + "." + fingerprint + ".pem";
+    const bool wrote_cert = trusted && write_cert_pem(ca_cert_path, cert, error);
+    X509_free(cert);
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+    close(fd);
+    return trusted && wrote_cert;
 }
 
 template <class Fn>
@@ -463,22 +661,37 @@ bool ftps_upload_file(Agent *agent, const BBL::PrintParams &params, const std::s
     curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
     curl_easy_setopt(curl, CURLOPT_READDATA, file);
     if (file_size >= 0) curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, static_cast<curl_off_t>(file_size));
+    std::string spki_pin;
+    std::string ca_cert_path;
+    if (!fetch_tls_pin(agent, params.dev_ip, 990, spki_pin, ca_cert_path, error)) {
+        curl_easy_cleanup(curl);
+        std::fclose(file);
+        return false;
+    }
+
     curl_easy_setopt(curl, CURLOPT_USE_SSL, CURLUSESSL_ALL);
     curl_easy_setopt(curl, CURLOPT_FTPSSLAUTH, CURLFTPAUTH_TLS);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_CAINFO, ca_cert_path.c_str());
+    curl_easy_setopt(curl, CURLOPT_PINNEDPUBLICKEY, spki_pin.c_str());
+    // Printer LAN certificates are self-signed; verify against the first-use
+    // pinned certificate and SPKI pin instead of a public CA.
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_FTP_CREATE_MISSING_DIRS, CURLFTP_CREATE_DIR_RETRY);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
-    log_line(agent, "ftps upload start dev_id=" + params.dev_id + " remote=" + remote_path + " bytes=" + std::to_string(std::max<long>(file_size, 0)));
+    log_line(agent, "ftps upload start dev_id=" + masked_len(params.dev_id) +
+                    " remote=" + path_basename(remote_path) +
+                    " bytes=" + std::to_string(std::max<long>(file_size, 0)));
     const CURLcode rc = curl_easy_perform(curl);
     long response = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response);
     if (rc != CURLE_OK) {
         error = std::string("curl ") + curl_easy_strerror(rc) + " response=" + std::to_string(response);
-        log_line(agent, "ftps upload failed dev_id=" + params.dev_id + " remote=" + remote_path + " error=" + error);
+        log_line(agent, "ftps upload failed dev_id=" + masked_len(params.dev_id) +
+                        " remote=" + path_basename(remote_path) + " error=" + error);
         curl_easy_cleanup(curl);
         std::fclose(file);
         return false;
@@ -486,7 +699,8 @@ bool ftps_upload_file(Agent *agent, const BBL::PrintParams &params, const std::s
 
     curl_easy_cleanup(curl);
     std::fclose(file);
-    log_line(agent, "ftps upload ok dev_id=" + params.dev_id + " remote=" + remote_path);
+    log_line(agent, "ftps upload ok dev_id=" + masked_len(params.dev_id) +
+                    " remote=" + path_basename(remote_path));
     return true;
 }
 
@@ -577,7 +791,8 @@ void emit_discovery(Agent *agent, const std::string &json)
         }
         last_json = json;
     }
-    log_line(agent, "discovery emit " + json);
+    log_line(agent, "discovery emit dev_id=" + masked_len(json_string_value(json, "dev_id")) +
+                    " dev_ip=" + masked_len(json_string_value(json, "dev_ip")));
     dispatch_callback(agent, [fn = agent->on_ssdp, json]() { fn(json); });
 }
 
@@ -706,7 +921,8 @@ void discovery_loop(Agent *agent)
                 const std::string sender_ip = ip_from_sockaddr(from);
                 const std::string lowered = lower_copy(packet);
                 if (lowered.find("bambu") != std::string::npos || lowered.find("bbl") != std::string::npos || lowered.find("3dprinter") != std::string::npos) {
-                    log_line(agent, "discovery candidate from " + sender_ip + " bytes=" + std::to_string(n) + " data=" + packet.substr(0, 700));
+                    log_line(agent, "discovery candidate sender=" + masked_len(sender_ip) +
+                                    " bytes=" + std::to_string(n));
                 }
                 emit_discovery(agent, discovery_json_from_packet(packet, sender_ip));
             }
@@ -944,7 +1160,7 @@ void mqtt_send_puback(Agent *agent, uint16_t packet_id)
 
 void mqtt_reader_loop(Agent *agent, std::string dev_id)
 {
-    log_line(agent, "mqtt reader start dev_id=" + dev_id);
+    log_line(agent, "mqtt reader start dev_id=" + masked_len(dev_id));
     auto last_ping = std::chrono::steady_clock::now();
     while (agent->mqtt_running.load()) {
         const auto now = std::chrono::steady_clock::now();
@@ -972,9 +1188,8 @@ void mqtt_reader_loop(Agent *agent, std::string dev_id)
             std::string msg(reinterpret_cast<const char *>(payload.data() + offset), payload.size() - offset);
             bool liveview_injected = false;
             msg = ensure_local_liveview_advertised(msg, &liveview_injected);
-            const size_t log_limit = 20000;
-            log_line(agent, "mqtt publish received dev_id=" + dev_id + " bytes=" + std::to_string(msg.size()) +
-                                " payload=" + msg.substr(0, log_limit));
+            log_line(agent, "mqtt publish received dev_id=" + masked_len(dev_id) +
+                                    " bytes=" + std::to_string(msg.size()));
             if (liveview_injected)
                 log_line(agent, "mqtt status injected ipcam.liveview local protocol");
             auto fn = agent->on_local_message ? agent->on_local_message : agent->on_message;
@@ -991,7 +1206,7 @@ void mqtt_reader_loop(Agent *agent, std::string dev_id)
         }
     }
     agent->mqtt_running.store(false);
-    log_line(agent, "mqtt reader stop dev_id=" + dev_id);
+    log_line(agent, "mqtt reader stop dev_id=" + masked_len(dev_id));
 }
 
 void stop_mqtt(Agent *agent)
@@ -1051,7 +1266,8 @@ bool start_mqtt(Agent *agent, const std::string &dev_id, const std::string &host
         stop_mqtt(agent);
         return false;
     }
-    SSL_CTX_set_verify(agent->ssl_ctx, SSL_VERIFY_NONE, nullptr);
+    // Printer LAN certificates are self-signed; authenticate with a persisted
+    // first-use certificate pin instead of public CA validation.
     agent->ssl = SSL_new(agent->ssl_ctx);
     if (!agent->ssl) {
         error = "SSL_new failed";
@@ -1062,6 +1278,10 @@ bool start_mqtt(Agent *agent, const std::string &dev_id, const std::string &host
     SSL_set_tlsext_host_name(agent->ssl, host.c_str());
     if (SSL_connect(agent->ssl) != 1) {
         error = "SSL_connect failed err=" + std::to_string(ERR_get_error());
+        stop_mqtt(agent);
+        return false;
+    }
+    if (!verify_or_trust_peer(agent, agent->ssl, host, port, error)) {
         stop_mqtt(agent);
         return false;
     }
@@ -1145,7 +1365,9 @@ int local_upload_and_start_print(Agent *agent, BBL::PrintParams params, BBL::OnU
     }
 
     const std::string payload = project_file_payload(params, remote_path);
-    log_line(agent, "local print publish dev_id=" + params.dev_id + " remote=" + remote_path + " payload=" + payload.substr(0, 700));
+    log_line(agent, "local print publish dev_id=" + masked_len(params.dev_id) +
+                    " remote=" + path_basename(remote_path) +
+                    " payload_bytes=" + std::to_string(payload.size()));
     if (update) dispatch_callback(agent, [update]() { update(BBL::PrintingStageSending, 0, "Starting print over LAN"); });
     if (!mqtt_send_publish(agent, params.dev_id, payload, 1)) {
         error = "mqtt publish failed";
@@ -1277,8 +1499,9 @@ int bambu_network_send_message(void *agent, std::string, std::string, int, int)
 int bambu_network_connect_printer(void *agent, std::string dev_id, std::string dev_ip, std::string username, std::string password, bool use_ssl)
 {
     auto *a = static_cast<Agent *>(agent);
-    log_line(a, std::string(__func__) + " dev_id=" + dev_id + " dev_ip=" + dev_ip +
-                    " username=" + username + " password_set=" + (!password.empty() ? "true" : "false") +
+    log_line(a, std::string(__func__) + " dev_id=" + masked_len(dev_id) +
+                    " dev_ip=" + masked_len(dev_ip) +
+                    " username=" + masked_len(username) + " password_set=" + (!password.empty() ? "true" : "false") +
                     " use_ssl=" + (use_ssl ? "true" : "false"));
     if (!agent) return kInvalid;
 
@@ -1291,7 +1514,8 @@ int bambu_network_connect_printer(void *agent, std::string dev_id, std::string d
         if (tcp_probe(dev_ip, first_port, 1800, error)) {
             connected_port = first_port;
         } else {
-            log_line(a, "connect probe failed dev_ip=" + dev_ip + " port=" + std::to_string(first_port) + " error=" + error);
+            log_line(a, "connect probe failed dev_ip=" + masked_len(dev_ip) +
+                        " port=" + std::to_string(first_port) + " error=" + error);
             error.clear();
             if (tcp_probe(dev_ip, second_port, 1800, error)) {
                 connected_port = second_port;
@@ -1299,21 +1523,31 @@ int bambu_network_connect_printer(void *agent, std::string dev_id, std::string d
         }
 
         if (connected_port != 0) {
-            if (connected_port == 8883) {
-                std::string mqtt_error;
-                if (!start_mqtt(a, dev_id, dev_ip, connected_port, username.empty() ? "bblp" : username, password, mqtt_error)) {
-                    clear_connected(a);
-                    log_line(a, "mqtt start failed dev_id=" + dev_id + " dev_ip=" + dev_ip + " error=" + mqtt_error);
-                    if (a->on_local_connect) {
-                        dispatch_callback(a, [fn = a->on_local_connect, dev_id, mqtt_error]() {
-                            fn(BBL::ConnectStatusFailed, dev_id, mqtt_error.empty() ? "mqtt_failed" : mqtt_error);
-                        });
-                    }
-                    return;
+            if (connected_port != 8883) {
+                log_line(a, "connect rejected non-tls-mqtt port=" + std::to_string(connected_port));
+                if (a->on_local_connect) {
+                    dispatch_callback(a, [fn = a->on_local_connect, dev_id]() {
+                        fn(BBL::ConnectStatusFailed, dev_id, "secure_mqtt_unavailable");
+                    });
                 }
+                return;
+            }
+            std::string mqtt_error;
+            if (!start_mqtt(a, dev_id, dev_ip, connected_port, username.empty() ? "bblp" : username, password, mqtt_error)) {
+                clear_connected(a);
+                log_line(a, "mqtt start failed dev_id=" + masked_len(dev_id) +
+                            " dev_ip=" + masked_len(dev_ip) + " error=" + mqtt_error);
+                if (a->on_local_connect) {
+                    dispatch_callback(a, [fn = a->on_local_connect, dev_id, mqtt_error]() {
+                        fn(BBL::ConnectStatusFailed, dev_id, mqtt_error.empty() ? "mqtt_failed" : mqtt_error);
+                    });
+                }
+                return;
             }
             set_connected(a, dev_id, dev_ip, connected_port, connected_port == 8883);
-            log_line(a, "connect ok dev_id=" + dev_id + " dev_ip=" + dev_ip + " port=" + std::to_string(connected_port));
+            log_line(a, "connect ok dev_id=" + masked_len(dev_id) +
+                        " dev_ip=" + masked_len(dev_ip) +
+                        " port=" + std::to_string(connected_port));
             if (a->on_local_connect) {
                 dispatch_callback(a, [fn = a->on_local_connect, dev_id]() {
                     fn(BBL::ConnectStatusOk, dev_id, "mqtt_ok");
@@ -1323,7 +1557,8 @@ int bambu_network_connect_printer(void *agent, std::string dev_id, std::string d
         }
 
         clear_connected(a);
-        log_line(a, "connect probe failed dev_id=" + dev_id + " dev_ip=" + dev_ip + " error=" + error);
+        log_line(a, "connect probe failed dev_id=" + masked_len(dev_id) +
+                    " dev_ip=" + masked_len(dev_ip) + " error=" + error);
         if (a->on_local_connect) {
             dispatch_callback(a, [fn = a->on_local_connect, dev_id, error]() {
                 fn(BBL::ConnectStatusFailed, dev_id, error.empty() ? "tcp_probe_failed" : error);
@@ -1355,16 +1590,15 @@ int bambu_network_disconnect_printer(void *agent)
 int bambu_network_send_message_to_printer(void *agent, std::string dev_id, std::string json_str, int qos, int flag)
 {
     auto *a = static_cast<Agent *>(agent);
-    log_line(a, std::string(__func__) + " dev_id=" + dev_id + " qos=" + std::to_string(qos) +
-                    " flag=" + std::to_string(flag) + " bytes=" + std::to_string(json_str.size()) +
-                    " payload=" + json_str.substr(0, 700));
+    log_line(a, std::string(__func__) + " dev_id=" + masked_len(dev_id) + " qos=" + std::to_string(qos) +
+                    " flag=" + std::to_string(flag) + " bytes=" + std::to_string(json_str.size()));
     if (!a) return kInvalid;
     if (!a->mqtt_running.load() || !a->ssl) {
         log_line(a, "mqtt publish skipped not connected");
         return BAMBU_NETWORK_ERR_SEND_MSG_FAILED;
     }
     if (!mqtt_send_publish(a, dev_id, json_str, qos)) return BAMBU_NETWORK_ERR_SEND_MSG_FAILED;
-    log_line(a, "mqtt publish sent dev_id=" + dev_id + " bytes=" + std::to_string(json_str.size()));
+    log_line(a, "mqtt publish sent dev_id=" + masked_len(dev_id) + " bytes=" + std::to_string(json_str.size()));
     return BAMBU_NETWORK_SUCCESS;
 }
 int bambu_network_update_cert(void *agent) { log_call(static_cast<Agent *>(agent), __func__); return agent ? BAMBU_NETWORK_SUCCESS : kInvalid; }
@@ -1382,7 +1616,8 @@ void bambu_network_install_device_cert(void *agent, std::string dev_id, bool lan
         first = a->cert_installed_devices.insert(dev_id).second;
     }
     if (!first) return;
-    log_line(a, std::string(__func__) + " dev_id=" + dev_id + " lan_only=" + (lan_only ? "true" : "false") + " status=device_cert_installed");
+    log_line(a, std::string(__func__) + " dev_id=" + masked_len(dev_id) +
+                    " lan_only=" + (lan_only ? "true" : "false") + " status=device_cert_installed");
     auto fn = a->on_local_message ? a->on_local_message : a->on_message;
     if (fn) dispatch_callback(a, [fn, dev_id]() { fn(dev_id, "device_cert_installed"); });
 }
@@ -1445,7 +1680,7 @@ int bambu_network_bind_detect(void *agent, std::string dev_ip, std::string, BBL:
         detect.connect_type = "lan";
     }
     detect.result_msg = "ok";
-    log_line(a, std::string(__func__) + " ok dev_id=" + detect.dev_id + " model_id=" + detect.model_id);
+    log_line(a, std::string(__func__) + " ok dev_id=" + masked_len(detect.dev_id) + " model_id=" + detect.model_id);
     return BAMBU_NETWORK_SUCCESS;
 }
 int bambu_network_report_consent(void *agent, std::string) { log_call(static_cast<Agent *>(agent), __func__); return BAMBU_NETWORK_SUCCESS; }

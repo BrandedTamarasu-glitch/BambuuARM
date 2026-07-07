@@ -66,6 +66,22 @@ void probe_logger(void *, int level, const char *message)
     std::cout << "plugin_log level=" << level << " message=" << (message ? message : "") << "\n";
 }
 
+std::string mask_url_secrets(std::string value)
+{
+    for (const char *key : {"passwd=", "authkey="}) {
+        size_t pos = 0;
+        while ((pos = value.find(key, pos)) != std::string::npos) {
+            pos += std::strlen(key);
+            size_t end = value.find('&', pos);
+            value.replace(pos, end == std::string::npos ? std::string::npos : end - pos, "<redacted>");
+            if (end == std::string::npos)
+                break;
+            pos = end + 1;
+        }
+    }
+    return value;
+}
+
 int call_start(const std::string &mode, StartStreamFn start_stream, StartStreamExFn start_stream_ex,
                Bambu_Tunnel tunnel)
 {
@@ -78,18 +94,24 @@ int call_start(const std::string &mode, StartStreamFn start_stream, StartStreamE
 
 int main(int argc, char **argv)
 {
-    if (argc < 4) {
-        std::cerr << "usage: official-live-probe <libBambuSource.so> <host> <access-code> [authkey] [mode] [extra-query]\n";
+    if (argc < 3) {
+        std::cerr << "usage: BAMBU_ACCESS_CODE=<access-code> [BAMBU_AUTHKEY=<authkey>] official-live-probe <libBambuSource.so> <host> [mode] [extra-query]\n";
         std::cerr << "modes: video, ex, audio, studio\n";
         return 2;
     }
 
     const char *lib_path = argv[1];
     const char *host = argv[2];
-    const char *access = argv[3];
-    const char *authkey = argc > 4 ? argv[4] : "";
-    const std::string mode = argc > 5 ? argv[5] : "video";
-    const char *extra_query = argc > 6 ? argv[6] : "";
+    const char *access = std::getenv("BAMBU_ACCESS_CODE");
+    const char *authkey = std::getenv("BAMBU_AUTHKEY");
+    const std::string mode = argc > 3 ? argv[3] : "video";
+    const char *extra_query = argc > 4 ? argv[4] : "";
+    if (!access || !*access) {
+        std::cerr << "BAMBU_ACCESS_CODE is required\n";
+        return 2;
+    }
+    if (!authkey)
+        authkey = "";
 
     void *lib = dlopen(lib_path, RTLD_NOW | RTLD_LOCAL);
     if (!lib) {
@@ -127,7 +149,7 @@ int main(int argc, char **argv)
             url += '&';
         url += extra_query;
     }
-    std::cout << "mode=" << mode << " url=" << url << "\n";
+    std::cout << "mode=" << mode << " url=" << mask_url_secrets(url) << "\n";
 
     Bambu_Tunnel tunnel = nullptr;
     int rc = create(&tunnel, url.c_str());

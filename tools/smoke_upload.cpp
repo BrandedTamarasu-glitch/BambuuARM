@@ -27,16 +27,21 @@ T sym(void *lib, const char *name)
 
 int main(int argc, char **argv)
 {
-    if (argc < 5 || argc > 6) {
-        std::cerr << "usage: smoke-upload <local-file> <dev-ip> <dev-id> <access-code> [plugin-so]\n";
+    if (argc < 4 || argc > 5) {
+        std::cerr << "usage: BAMBU_ACCESS_CODE=<access-code> smoke-upload <local-file> <dev-ip> <dev-id> [plugin-so]\n";
         return 2;
     }
 
     const std::string local_file = argv[1];
     const std::string dev_ip = argv[2];
     const std::string dev_id = argv[3];
-    const std::string access_code = argv[4];
-    const std::string plugin = argc > 5 ? argv[5] : "./build/libbambu_networking.so";
+    const char *access_env = std::getenv("BAMBU_ACCESS_CODE");
+    if (!access_env || !*access_env) {
+        std::cerr << "BAMBU_ACCESS_CODE is required\n";
+        return 2;
+    }
+    const std::string access_code = access_env;
+    const std::string plugin = argc > 4 ? argv[4] : "./build/libbambu_networking.so";
 
     void *lib = dlopen(plugin.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!lib) {
@@ -49,8 +54,12 @@ int main(int argc, char **argv)
     auto set_config_dir = sym<set_config_dir_fn>(lib, "bambu_network_set_config_dir");
     auto start_send = sym<start_send_fn>(lib, "bambu_network_start_send_gcode_to_sdcard");
 
+    const char *home = std::getenv("HOME");
+    const std::string config_dir = home && *home
+        ? std::string(home) + "/.var/app/com.bambulab.BambuStudio/config/BambuStudio"
+        : "/tmp";
     void *agent = create_agent("/tmp");
-    set_config_dir(agent, std::string(std::getenv("HOME")) + "/.var/app/com.bambulab.BambuStudio/config/BambuStudio");
+    set_config_dir(agent, config_dir);
 
     BBL::PrintParams params{};
     params.dev_id = dev_id;

@@ -169,17 +169,21 @@ int connect_tcp(const char *host, int port)
 
 int main(int argc, char **argv)
 {
-    if (argc < 3) {
-        std::cerr << "usage: probe-local-tunnel <host> <access-code> [client-id] [client-version] [variant] [mode] [sequence]\n";
+    if (argc < 2) {
+        std::cerr << "usage: BAMBU_ACCESS_CODE=<access-code> probe-local-tunnel <host> [client-id] [client-version] [variant] [mode] [sequence]\n";
         return 2;
     }
     const char *host = argv[1];
-    const char *access = argv[2];
-    const char *client_id = argc > 3 ? argv[3] : "arm64probe";
-    const char *client_ver = argc > 4 ? argv[4] : "02.07.01.62";
-    const std::string variant = argc > 5 ? argv[5] : "user-pass";
-    const std::string mode = argc > 6 ? argv[6] : "step";
-    uint32_t sequence = argc > 7 ? static_cast<uint32_t>(std::strtoul(argv[7], nullptr, 0))
+    const char *access = std::getenv("BAMBU_ACCESS_CODE");
+    if (!access || !*access) {
+        std::cerr << "BAMBU_ACCESS_CODE is required\n";
+        return 2;
+    }
+    const char *client_id = argc > 2 ? argv[2] : "arm64probe";
+    const char *client_ver = argc > 3 ? argv[3] : "02.07.01.62";
+    const std::string variant = argc > 4 ? argv[4] : "user-pass";
+    const std::string mode = argc > 5 ? argv[5] : "step";
+    uint32_t sequence = argc > 6 ? static_cast<uint32_t>(std::strtoul(argv[6], nullptr, 0))
                                  : static_cast<uint32_t>(
                                        std::chrono::steady_clock::now().time_since_epoch().count());
 
@@ -193,7 +197,6 @@ int main(int argc, char **argv)
     }
 
     SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
-    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);
     SSL_CTX_set_cipher_list(ctx, "HIGH:MEDIA:LOW:!DH");
     SSL *ssl = SSL_new(ctx);
     SSL_set_fd(ssl, fd);

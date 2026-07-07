@@ -9,7 +9,9 @@
 #include <fstream>
 #include <netinet/in.h>
 #include <openssl/err.h>
+#include <openssl/evp.h>
 #include <openssl/ssl.h>
+#include <openssl/x509.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -61,6 +63,14 @@ std::string log_path()
     return "/tmp/arm64_bambu_source.log";
 }
 
+std::string config_dir()
+{
+    const char *home = std::getenv("HOME");
+    if (home && *home)
+        return std::string(home) + "/.var/app/com.bambulab.BambuStudio/config/BambuStudio";
+    return "/tmp";
+}
+
 void log_line(const std::string &message)
 {
     std::ofstream log(log_path(), std::ios::app);
@@ -79,9 +89,24 @@ std::string masked(const std::string &value)
     return "len=" + std::to_string(value.size());
 }
 
+std::string masked_host(const std::string &value)
+{
+    if (value.empty())
+        return "(empty)";
+    return "host_len=" + std::to_string(value.size());
+}
+
 std::string mask_url_secrets(std::string value)
 {
-    for (const char *key : {"passwd=", "authkey="}) {
+    constexpr const char *local_prefix = "bambu:///local/";
+    if (value.rfind(local_prefix, 0) == 0) {
+        size_t host_start = std::strlen(local_prefix);
+        size_t host_end = value.find('?', host_start);
+        if (host_end == std::string::npos)
+            host_end = value.size();
+        value.replace(host_start, host_end - host_start, "<redacted-host>");
+    }
+    for (const char *key : {"passwd=", "authkey=", "cli_id="}) {
         size_t pos = 0;
         while ((pos = value.find(key, pos)) != std::string::npos) {
             pos += std::strlen(key);
@@ -93,6 +118,69 @@ std::string mask_url_secrets(std::string value)
         }
     }
     return value;
+}
+
+std::string to_hex(const unsigned char *data, unsigned int size)
+{
+    static constexpr char hex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(size * 2);
+    for (unsigned int i = 0; i < size; ++i) {
+        out.push_back(hex[data[i] >> 4]);
+        out.push_back(hex[data[i] & 0x0f]);
+    }
+    return out;
+}
+
+std::string peer_cert_fingerprint(SSL *ssl)
+{
+    X509 *cert = SSL_get_peer_certificate(ssl);
+    if (!cert)
+        return {};
+    unsigned char digest[EVP_MAX_MD_SIZE]{};
+    unsigned int digest_len = 0;
+    const bool ok = X509_digest(cert, EVP_sha256(), digest, &digest_len) == 1;
+    X509_free(cert);
+    return ok ? to_hex(digest, digest_len) : std::string();
+}
+
+bool verify_or_trust_peer(SSL *ssl, const std::string &host, int port, std::string &error)
+{
+    const std::string fingerprint = peer_cert_fingerprint(ssl);
+    if (fingerprint.empty()) {
+        error = "missing peer certificate";
+        return false;
+    }
+
+    const std::string key = host + ":" + std::to_string(port);
+    const std::string path = config_dir() + "/arm64_trusted_tls_pins.txt";
+    {
+        std::ifstream in(path);
+        std::string line;
+        while (std::getline(in, line)) {
+            std::istringstream parts(line);
+            std::string stored_key;
+            std::string stored_fingerprint;
+            if (parts >> stored_key >> stored_fingerprint) {
+                if (stored_key == key) {
+                    if (stored_fingerprint == fingerprint)
+                        return true;
+                    error = "peer certificate changed for " + masked_host(host);
+                    return false;
+                }
+            }
+        }
+    }
+
+    std::ofstream out(path, std::ios::app);
+    if (!out) {
+        error = "cannot store peer certificate pin";
+        return false;
+    }
+    out << key << " " << fingerprint << "\n";
+    log_line("trusted first peer certificate for " + masked_host(host) +
+             " port=" + std::to_string(port));
+    return true;
 }
 
 void set_error(const char *message)
@@ -379,7 +467,8 @@ int connect_local(StubTunnel *tunnel)
         set_error("ARM64 BambuSource SSL_CTX_new failed");
         return Bambu_stream_end;
     }
-    SSL_CTX_set_verify(tunnel->ctx, SSL_VERIFY_NONE, nullptr);
+    // Printer LAN certificates are self-signed; authenticate with a persisted
+    // first-use certificate pin instead of public CA validation.
     SSL_CTX_set_cipher_list(tunnel->ctx, "HIGH:MEDIA:LOW:!DH");
     tunnel->ssl = SSL_new(tunnel->ctx);
     tunnel->fd = fd;
@@ -389,6 +478,13 @@ int connect_local(StubTunnel *tunnel)
         log_line("Bambu_Open SSL_connect failed err=" + std::to_string(err));
         close_local(tunnel);
         set_error("ARM64 BambuSource SSL connect failed");
+        return Bambu_stream_end;
+    }
+    std::string pin_error;
+    if (!verify_or_trust_peer(tunnel->ssl, tunnel->host, tunnel->port, pin_error)) {
+        log_line("Bambu_Open TLS pin failed " + pin_error);
+        close_local(tunnel);
+        set_error("ARM64 BambuSource TLS peer check failed");
         return Bambu_stream_end;
     }
 
@@ -472,17 +568,17 @@ extern "C" int Bambu_Open(Bambu_Tunnel tunnel)
     }
 
     if (parse_local_url(stub)) {
-        log_line("Bambu_Open local host=" + stub->host + " port=" + std::to_string(stub->port) +
+        log_line("Bambu_Open local " + masked_host(stub->host) + " port=" + std::to_string(stub->port) +
                  " user=" + stub->user + " passwd=" + masked(stub->passwd) +
                  " authkey=" + masked(stub->authkey) +
-                 " cli_id=" + stub->cli_id + " cli_ver=" + stub->cli_ver);
+                 " cli_id=" + masked(stub->cli_id) + " cli_ver=" + stub->cli_ver);
         int rc = connect_local(stub);
         log_line("Bambu_Open local rc=" + std::to_string(rc));
         return rc;
     }
 
     stub->open = true;
-    log_line("Bambu_Open path=" + stub->path);
+    log_line("Bambu_Open path=" + mask_url_secrets(stub->path));
     return unavailable(stub);
 }
 

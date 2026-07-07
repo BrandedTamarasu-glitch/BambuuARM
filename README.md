@@ -52,10 +52,17 @@ Quick start:
    ```
 
 5. Seed or restore the LAN printer entry if Studio does not discover it
-   automatically:
+   automatically. Use the printer device id, printer LAN IP, and LAN access
+   code:
 
    ```sh
-   ./seed-lan-config.py
+   ./seed-lan-config.py SERIAL_OR_DEVICE_ID 192.0.2.50 ACCESS_CODE
+   ```
+
+   If discovery also needs a manual seed, write one with the same id and IP:
+
+   ```sh
+   BAMBU_DEV_ID=SERIAL_OR_DEVICE_ID BAMBU_DEV_IP=192.0.2.50 ./seed-discovered-a1-lan.sh
    ```
 
 6. Restart Bambu Studio. The printer should appear as a LAN printer. Local
@@ -87,6 +94,16 @@ Runtime diagnostics are written to:
 ~/.var/app/com.bambulab.BambuStudio/config/BambuStudio/arm64_bambu_source.log
 ```
 
+LAN TLS peers are authenticated with first-use certificate/public-key pins
+stored in:
+
+```text
+~/.var/app/com.bambulab.BambuStudio/config/BambuStudio/arm64_trusted_tls_pins.txt
+```
+
+If a printer mainboard or certificate changes, remove the matching pin entry and
+reconnect on a trusted LAN.
+
 Supported local behavior:
 
 - LAN discovery and configured-printer restore.
@@ -113,6 +130,8 @@ Troubleshooting:
   two `arm64_*` log files listed above.
 - If liveview opens but stays blank, inspect `arm64_bambu_source.log` for
   `prefetch_stream_info_sample codec=mjpeg size=...`.
+- If a connection fails after a printer certificate change, remove the matching
+  entry from `arm64_trusted_tls_pins.txt` while on a trusted LAN.
 - If upload or local print fails, inspect `arm64_network_stub.log` for the FTPS
   path and MQTT command result.
 - Re-run `./install-flatpak-user.sh` after every rebuild; Bambu Studio loads the
@@ -133,14 +152,14 @@ Each non-comment line must be one full discovery JSON object:
 For the printer discovered during Phase 2, this helper writes a LAN-mode seed:
 
 ```sh
-./seed-discovered-a1-lan.sh
+BAMBU_DEV_ID=SERIAL_OR_DEVICE_ID BAMBU_DEV_IP=192.0.2.50 ./seed-discovered-a1-lan.sh
 ```
 
 This helper writes Bambu Studio's saved LAN access state, including the encoded
 `user_access_dev_ip` value required by Studio's local-printer restore path:
 
 ```sh
-./seed-lan-config.py
+./seed-lan-config.py SERIAL_OR_DEVICE_ID 192.0.2.50 ACCESS_CODE
 ```
 
 Current verified state:
