@@ -245,23 +245,18 @@ Current verified state:
   `video_jpeg` when the first sample is JPEG, and raises `max_frame_size` from
   the old provisional 48 KB value to 1 MB. A Studio liveview test on ARM
   confirmed video playback after these changes.
-- `tools/official_live_probe.cpp` loads the installed x86 `libBambuSource.so`
-  and calls the official ABI outside Studio. It can `Bambu_Init`,
-  `Bambu_Create`, and `Bambu_Open` the same LAN URL, but standalone
-  `Bambu_StartStream(true)` remains in would-block/error state and never reaches
-  the `start_stream ok` transition seen in Studio's own log. That suggests
-  Studio is providing an additional playback/session prerequisite or exact call
-  sequence that the raw probe and standalone ABI harness do not yet reproduce.
+- `tools/official_live_probe.cpp` can load a `libBambuSource.so` and exercise
+  the local liveview ABI outside Studio. It is a developer diagnostic and reads
+  the LAN access code from `BAMBU_ACCESS_CODE` so secrets are not passed on the
+  command line.
 - Current ARM probing through the aarch64 Flatpak runtime requires
   `--share=network`; without it, the local probe cannot connect even though the
   host can reach the printer. With network sharing enabled, port 6000 negotiates
   `TLSv1.2` / `ECDHE-RSA-AES256-GCM-SHA384`. Earlier empty/default-authkey
   control-frame probes timed out, but those probes used the now-obsolete
   `passwd`/`authkey` slot interpretation.
-- The ARM `libBambuSource.so` now logs local URL credential lengths and the
-  `0x3000` control-frame credential-slot lengths so the next Studio camera
-  preview test can confirm whether Studio provides an `authkey` or only the LAN
-  access code.
+- The ARM `libBambuSource.so` logs only redacted local URL and credential
+  metadata for liveview diagnostics.
 - A follow-up x86 disassembly pass confirmed `Bambu_StartStream(true)` maps to
   `Bambu_StartStreamEx(0x3000)`. On successful local liveview start, the common
   x86 wrapper can return `Bambu_would_block` while samples are pending. Returning
@@ -269,47 +264,28 @@ Current verified state:
   Studio to repeatedly call `Bambu_StartStream(true)` and never advance to
   `Bambu_ReadSample`, so the ARM shim keeps returning `Bambu_success` from
   stream start and records concrete SSL read failure details in the sample path.
-- The ARM networking shim now normalizes full `push_status` payloads that
+- The ARM networking shim normalizes full `push_status` payloads that
   advertise `ipcam_dev:"1"` but omit `ipcam.liveview`/`ipcam.rtsp_url`, adding
   `ipcam.liveview.local:"local"` and `remote:"none"` before handing the status
-  to Studio. A clean Studio restart on 2026-07-07 confirmed the forwarded full
-  status contains the injected liveview object. The timed launch did not open
-  the camera panel, so `libBambuSource.so` was not invoked during that run.
-- A 2026-07-07 Studio camera-panel test confirmed the current call order is
-  now correct (`Bambu_Open` -> `Bambu_StartStream(true)` -> `Bambu_GetStreamInfo`
-  -> repeated `Bambu_ReadSample`) and that the x86-style `user`/`passwd`
-  `0x3000` payload is sent. No media bytes arrived; reads stayed at
-  `SSL_ERROR_WANT_READ` until close. The combined-write probe result supersedes
-  that finding.
+  to Studio.
+- A 2026-07-07 ARM runtime smoke test confirmed liveview still returns MJPEG
+  frames after first-use TLS pinning was added.
 - Direct RTSP-style ports 554, 8554, 322, and 8080 were refused; port 6000 is
   the only open local-video candidate seen so far.
-- `tools/official_live_probe.cpp` now supports `video`, `ex`, `audio`, and
+- `tools/official_live_probe.cpp` supports `video`, `ex`, `audio`, and
   `studio` call-order modes plus optional extra query parameters. `build.sh`
-  builds it when a host C++ compiler is installed; this machine currently has no
-  host compiler, so only the ARM/aarch64 artifacts were rebuilt here.
-- `libBambuSource.so` now masks `passwd` and `authkey` query values in new
-  `Bambu_Create` log lines and treats `SSL_ERROR_ZERO_RETURN` as stream end
-  rather than continuing to report "playing" with no frames.
+  builds it only when a host C++ compiler is installed.
+- `libBambuSource.so` masks local URL host and credential query values in logs
+  and treats `SSL_ERROR_ZERO_RETURN` as stream end rather than continuing to
+  report "playing" with no frames.
 
-Next phase:
+Post-release follow-up:
 
-- Investigate whether Studio's "unable to parse" UI message can be stale from a
-  previous failed attempt or whether an additional printer acknowledgement should
-  be surfaced differently to Studio.
-- Improve remote filename generation so uploaded files are not hidden dot names
-  such as `.2.0.3mf`.
-- Camera follow-up scope:
-  - Keep `arm64_bambu_source.log` diagnostics around
-    `prefetch_stream_info_sample codec=mjpeg size=...` and `Bambu_ReadSample`
-    until the liveview path has had more soak time on ARM.
-  - Compare Studio's exact playback/session setup against
-    `tools/official_live_probe.cpp` only if standalone x86-vs-ARM probe parity
-    becomes useful again; Studio-driven ARM liveview is working with the current
-    combined-write shim.
-  - Keep the direct RTSP path on hold unless the printer starts advertising
-    `ipcam.rtsp_url`; probes showed 554/322 closed and only 6000 open for local
-    video.
-  - Keep Agora/cloud video unsupported unless a specific local-only requirement
-    is found.
-- Keep cloud login/binding unsupported unless there is a clear local-only reason
-  to add a specific safe behavior.
+- Get confirmation from another ARM64 Linux user and another LAN-mode printer.
+- Add `CHANGELOG.md` and `SECURITY.md` before the next tagged release.
+- Keep the release source-only unless binary packaging is added intentionally;
+  developer diagnostic binaries should not be shipped as end-user artifacts.
+- Improve remote filename generation so uploaded files are always readable and
+  never hidden dot names.
+- Keep cloud login, binding, Agora/cloud video, and direct RTSP unsupported
+  unless a specific local-only requirement is found.
