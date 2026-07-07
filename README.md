@@ -10,6 +10,8 @@ reports, uploaded over FTPS, started with a local `project_file` print command,
 and viewed through local LAN liveview. Cloud account and binding flows are still
 intentionally unsupported.
 
+![Fedora Asahi ARM64 system running Bambu Studio with LAN liveview playing](docs/assets/arm64-liveview-working.png)
+
 Build:
 
 ```sh
