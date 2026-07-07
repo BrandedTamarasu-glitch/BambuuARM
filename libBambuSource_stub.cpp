@@ -38,6 +38,8 @@ struct StubTunnel {
     bool local = false;
     bool live_control_sent = false;
     bool first_sample_ready = false;
+    bool stream_info_known = false;
+    bool stream_is_mjpeg = true;
     int read_wait_count = 0;
     int fd = -1;
     SSL_CTX *ctx = nullptr;
@@ -45,6 +47,7 @@ struct StubTunnel {
     uint32_t sequence = 0;
     std::vector<uint8_t> first_sample;
     uint64_t first_decode_time = 0;
+    uint32_t max_frame_size = 1024 * 1024;
 };
 
 std::mutex g_error_mutex;
@@ -67,6 +70,29 @@ void log_line(const std::string &message)
     char ts[32] = {};
     std::strftime(ts, sizeof(ts), "%F %T", std::localtime(&now));
     log << ts << " " << message << "\n";
+}
+
+std::string masked(const std::string &value)
+{
+    if (value.empty())
+        return "(empty)";
+    return "len=" + std::to_string(value.size());
+}
+
+std::string mask_url_secrets(std::string value)
+{
+    for (const char *key : {"passwd=", "authkey="}) {
+        size_t pos = 0;
+        while ((pos = value.find(key, pos)) != std::string::npos) {
+            pos += std::strlen(key);
+            size_t end = value.find('&', pos);
+            value.replace(pos, end == std::string::npos ? std::string::npos : end - pos, "<redacted>");
+            if (end == std::string::npos)
+                break;
+            pos = end + 1;
+        }
+    }
+    return value;
 }
 
 void set_error(const char *message)
@@ -147,13 +173,16 @@ bool ssl_write_all(SSL *ssl, const uint8_t *data, size_t size)
     return true;
 }
 
-bool ssl_read_all(SSL *ssl, uint8_t *data, size_t size)
+bool ssl_read_all(SSL *ssl, uint8_t *data, size_t size, int *last_result = nullptr)
 {
     size_t off = 0;
     while (off < size) {
         int n = SSL_read(ssl, data + off, static_cast<int>(size - off));
-        if (n <= 0)
+        if (n <= 0) {
+            if (last_result)
+                *last_result = n;
             return false;
+        }
         off += static_cast<size_t>(n);
     }
     return true;
@@ -182,40 +211,119 @@ bool write_control3000(StubTunnel *tunnel)
     header.version = 0x00;
 
     std::vector<uint8_t> payload(64, 0);
-    // x86 BambuTunnelLocal stores passwd first, then authkey, before sending
-    // the 0x3000 liveview control frame. LAN URLs commonly omit authkey.
-    std::memcpy(payload.data(), tunnel->passwd.c_str(), std::min<size_t>(32, tunnel->passwd.size()));
-    std::memcpy(payload.data() + 32, tunnel->authkey.c_str(), std::min<size_t>(32, tunnel->authkey.size()));
+    // x86 BambuTunnelLocal copies the URL user into the first 32-byte slot,
+    // then passwd into the second, before sending the 0x3000 liveview control.
+    std::memcpy(payload.data(), tunnel->user.c_str(), std::min<size_t>(32, tunnel->user.size()));
+    std::memcpy(payload.data() + 32, tunnel->passwd.c_str(), std::min<size_t>(32, tunnel->passwd.size()));
 
-    return ssl_write_all(tunnel->ssl, reinterpret_cast<const uint8_t *>(&header), sizeof(header)) &&
-           ssl_write_all(tunnel->ssl, payload.data(), payload.size());
+    log_line("write_control3000 user=" + masked(tunnel->user) +
+             " passwd=" + masked(tunnel->passwd));
+    std::vector<uint8_t> frame(sizeof(header) + payload.size());
+    std::memcpy(frame.data(), &header, sizeof(header));
+    std::memcpy(frame.data() + sizeof(header), payload.data(), payload.size());
+    return ssl_write_all(tunnel->ssl, frame.data(), frame.size());
 }
 
-bool read_frame(StubTunnel *tunnel, FrameHeader &header, std::vector<uint8_t> &payload)
+enum class ReadFrameResult {
+    ok,
+    wait,
+    closed,
+    error,
+};
+
+ReadFrameResult read_frame(StubTunnel *tunnel, FrameHeader &header, std::vector<uint8_t> &payload)
 {
-    if (!ssl_read_all(tunnel->ssl, reinterpret_cast<uint8_t *>(&header), sizeof(header))) {
-        int ssl_error = SSL_get_error(tunnel->ssl, -1);
+    int last_result = 0;
+    if (!ssl_read_all(tunnel->ssl, reinterpret_cast<uint8_t *>(&header), sizeof(header), &last_result)) {
+        int ssl_error = SSL_get_error(tunnel->ssl, last_result);
         unsigned long err = ERR_get_error();
-        if (err)
-            log_line("read_frame header failed ssl_error=" + std::to_string(ssl_error) +
-                     " err=" + std::to_string(err));
-        return false;
+        log_line("read_frame header failed ssl_result=" + std::to_string(last_result) +
+                 " ssl_error=" + std::to_string(ssl_error) +
+                 " err=" + std::to_string(err));
+        if (ssl_error == SSL_ERROR_WANT_READ || ssl_error == SSL_ERROR_WANT_WRITE)
+            return ReadFrameResult::wait;
+        if (ssl_error == SSL_ERROR_ZERO_RETURN)
+            return ReadFrameResult::closed;
+        return ReadFrameResult::error;
     }
     if (header.size > 1024 * 1024) {
         log_line("read_frame oversized size=" + std::to_string(header.size));
-        return false;
+        return ReadFrameResult::error;
     }
     payload.assign(header.size, 0);
-    if (!payload.empty() && !ssl_read_all(tunnel->ssl, payload.data(), payload.size())) {
-        int ssl_error = SSL_get_error(tunnel->ssl, -1);
+    if (!payload.empty() && !ssl_read_all(tunnel->ssl, payload.data(), payload.size(), &last_result)) {
+        int ssl_error = SSL_get_error(tunnel->ssl, last_result);
         unsigned long err = ERR_get_error();
-        if (err)
-            log_line("read_frame payload failed size=" + std::to_string(header.size) +
-                     " ssl_error=" + std::to_string(ssl_error) +
-                     " err=" + std::to_string(err));
-        return false;
+        log_line("read_frame payload failed size=" + std::to_string(header.size) +
+                 " ssl_result=" + std::to_string(last_result) +
+                 " ssl_error=" + std::to_string(ssl_error) +
+                 " err=" + std::to_string(err));
+        if (ssl_error == SSL_ERROR_WANT_READ || ssl_error == SSL_ERROR_WANT_WRITE)
+            return ReadFrameResult::wait;
+        if (ssl_error == SSL_ERROR_ZERO_RETURN)
+            return ReadFrameResult::closed;
+        return ReadFrameResult::error;
     }
-    return true;
+    return ReadFrameResult::ok;
+}
+
+bool looks_like_jpeg(const std::vector<uint8_t> &payload)
+{
+    return payload.size() >= 2 && payload[0] == 0xff && payload[1] == 0xd8;
+}
+
+bool looks_like_h264_annexb(const std::vector<uint8_t> &payload)
+{
+    return (payload.size() >= 4 &&
+            payload[0] == 0x00 && payload[1] == 0x00 &&
+            ((payload[2] == 0x01) || (payload[2] == 0x00 && payload[3] == 0x01)));
+}
+
+const char *stream_codec_name(const StubTunnel *tunnel)
+{
+    return tunnel && tunnel->stream_is_mjpeg ? "mjpeg" : "h264";
+}
+
+void fill_stream_info(StubTunnel *tunnel, Bambu_StreamInfo *info)
+{
+    if (!info)
+        return;
+    std::memset(info, 0, sizeof(*info));
+    info->type = VIDE;
+    info->sub_type = tunnel && !tunnel->stream_is_mjpeg ? AVC1 : MJPG;
+    info->format.video.width = 1920;
+    info->format.video.height = 1080;
+    info->format.video.frame_rate = 15;
+    info->format_type = tunnel && !tunnel->stream_is_mjpeg ? video_avc_byte_stream : video_jpeg;
+    info->max_frame_size = static_cast<int>(tunnel ? tunnel->max_frame_size : 1024 * 1024);
+}
+
+ReadFrameResult prefetch_stream_info_sample(StubTunnel *tunnel)
+{
+    if (!tunnel || tunnel->first_sample_ready)
+        return ReadFrameResult::ok;
+
+    FrameHeader header{};
+    std::vector<uint8_t> payload;
+    ReadFrameResult result = read_frame(tunnel, header, payload);
+    if (result != ReadFrameResult::ok)
+        return result;
+
+    tunnel->first_sample = std::move(payload);
+    tunnel->first_decode_time = header.sequence;
+    tunnel->first_sample_ready = true;
+    tunnel->read_wait_count = 0;
+    tunnel->stream_is_mjpeg = looks_like_jpeg(tunnel->first_sample) ||
+                              !looks_like_h264_annexb(tunnel->first_sample);
+    tunnel->stream_info_known = true;
+    tunnel->max_frame_size = std::max<uint32_t>(
+        1024 * 1024,
+        static_cast<uint32_t>(tunnel->first_sample.size()));
+    log_line("prefetch_stream_info_sample codec=" + std::string(stream_codec_name(tunnel)) +
+             " size=" + std::to_string(tunnel->first_sample.size()) +
+             " kind=" + std::to_string(header.kind) +
+             " sequence=" + std::to_string(header.sequence));
+    return ReadFrameResult::ok;
 }
 
 void close_local(StubTunnel *tunnel)
@@ -297,7 +405,7 @@ StubTunnel *as_tunnel(Bambu_Tunnel tunnel)
 int unavailable(StubTunnel *tunnel)
 {
     constexpr const char *message =
-        "ARM64 BambuSource shim loaded; camera/video streaming is not implemented yet";
+        "ARM64 BambuSource shim loaded; requested non-local media path is unsupported";
     set_error(message);
     tunnel_log(tunnel, 2, message);
     return Bambu_buffer_limit;
@@ -340,7 +448,7 @@ extern "C" int Bambu_Create(Bambu_Tunnel *tunnel, char const *path)
         created->path = path;
     parse_local_url(created);
     *tunnel = created;
-    log_line(std::string("Bambu_Create path=") + (path ? path : "(null)"));
+    log_line(std::string("Bambu_Create path=") + (path ? mask_url_secrets(path) : "(null)"));
     set_error("ARM64 BambuSource tunnel created");
     return Bambu_success;
 }
@@ -365,7 +473,9 @@ extern "C" int Bambu_Open(Bambu_Tunnel tunnel)
 
     if (parse_local_url(stub)) {
         log_line("Bambu_Open local host=" + stub->host + " port=" + std::to_string(stub->port) +
-                 " user=" + stub->user + " cli_id=" + stub->cli_id);
+                 " user=" + stub->user + " passwd=" + masked(stub->passwd) +
+                 " authkey=" + masked(stub->authkey) +
+                 " cli_id=" + stub->cli_id + " cli_ver=" + stub->cli_ver);
         int rc = connect_local(stub);
         log_line("Bambu_Open local rc=" + std::to_string(rc));
         return rc;
@@ -387,7 +497,7 @@ extern "C" int Bambu_StartStream(Bambu_Tunnel tunnel, bool video)
         return start_local_live(stub, 0x3000);
 
     std::vector<uint8_t> auth(16, 0);
-    std::memcpy(auth.data(), stub->authkey.c_str(), std::min<size_t>(8, stub->authkey.size()));
+    std::memcpy(auth.data(), stub->user.c_str(), std::min<size_t>(8, stub->user.size()));
     std::memcpy(auth.data() + 8, stub->passwd.c_str(), std::min<size_t>(8, stub->passwd.size()));
     if (!write_frame(stub, 0x01, auth)) {
         set_error("ARM64 BambuSource local auth write failed");
@@ -410,24 +520,44 @@ extern "C" int Bambu_GetStreamCount(Bambu_Tunnel tunnel)
     return stub && stub->local ? 1 : 0;
 }
 
-extern "C" int Bambu_GetStreamInfo(Bambu_Tunnel /*tunnel*/, int index, Bambu_StreamInfo *info)
+extern "C" int Bambu_GetStreamInfo(Bambu_Tunnel tunnel, int index, Bambu_StreamInfo *info)
 {
     if (index != 0) {
         set_error("ARM64 BambuSource stream index out of range");
         return Bambu_stream_end;
     }
-    if (info) {
-        std::memset(info, 0, sizeof(*info));
-        info->type = VIDE;
-        info->sub_type = AVC1;
-        info->format.video.width = 1920;
-        info->format.video.height = 1080;
-        info->format.video.frame_rate = 15;
-        info->format_type = video_avc_byte_stream;
-        info->max_frame_size = 0xbb80;
+
+    auto *stub = as_tunnel(tunnel);
+    if (!stub || !stub->local || !stub->ssl) {
+        fill_stream_info(stub, info);
+        log_line("Bambu_GetStreamInfo fallback codec=" + std::string(stream_codec_name(stub)));
+        set_error("ARM64 BambuSource returning fallback stream info");
+        return Bambu_success;
     }
-    log_line("Bambu_GetStreamInfo");
-    set_error("ARM64 BambuSource returning provisional H.264 stream info");
+
+    if (!stub->stream_info_known && stub->live_control_sent) {
+        ReadFrameResult result = ReadFrameResult::wait;
+        for (int attempt = 0; attempt < 3 && result == ReadFrameResult::wait; ++attempt)
+            result = prefetch_stream_info_sample(stub);
+        if (result == ReadFrameResult::closed) {
+            set_error("ARM64 BambuSource local stream closed before stream info");
+            return Bambu_stream_end;
+        }
+        if (result == ReadFrameResult::error) {
+            set_error("ARM64 BambuSource local stream info read failed");
+            return Bambu_stream_end;
+        }
+        if (result == ReadFrameResult::wait) {
+            stub->stream_is_mjpeg = true;
+            stub->stream_info_known = true;
+            log_line("Bambu_GetStreamInfo no prefetch sample, defaulting codec=mjpeg");
+        }
+    }
+
+    fill_stream_info(stub, info);
+    log_line("Bambu_GetStreamInfo codec=" + std::string(stream_codec_name(stub)) +
+             " max_frame_size=" + std::to_string(stub->max_frame_size));
+    set_error("ARM64 BambuSource returning local stream info");
     return Bambu_success;
 }
 
@@ -462,7 +592,16 @@ extern "C" int Bambu_ReadSample(Bambu_Tunnel tunnel, Bambu_Sample *sample)
 
     FrameHeader header{};
     std::vector<uint8_t> payload;
-    if (!read_frame(stub, header, payload)) {
+    ReadFrameResult read_result = read_frame(stub, header, payload);
+    if (read_result != ReadFrameResult::ok) {
+        if (read_result == ReadFrameResult::closed) {
+            set_error("ARM64 BambuSource local stream closed before first frame");
+            return Bambu_stream_end;
+        }
+        if (read_result == ReadFrameResult::error) {
+            set_error("ARM64 BambuSource local stream read failed");
+            return Bambu_stream_end;
+        }
         stub->read_wait_count++;
         if (stub->read_wait_count == 1 || stub->read_wait_count % 10 == 0)
             log_line("Bambu_ReadSample waiting count=" + std::to_string(stub->read_wait_count));
@@ -473,7 +612,7 @@ extern "C" int Bambu_ReadSample(Bambu_Tunnel tunnel, Bambu_Sample *sample)
     stub->first_sample = std::move(payload);
     sample->itrack = 0;
     sample->size = static_cast<int>(stub->first_sample.size());
-    sample->flags = 0;
+    sample->flags = stub->stream_is_mjpeg ? f_sync : 0;
     sample->buffer = stub->first_sample.data();
     sample->decode_time = header.sequence;
     log_line("Bambu_ReadSample returning size=" + std::to_string(sample->size) +
@@ -505,8 +644,11 @@ extern "C" void Bambu_Close(Bambu_Tunnel tunnel)
         close_local(stub);
         stub->live_control_sent = false;
         stub->first_sample_ready = false;
+        stub->stream_info_known = false;
+        stub->stream_is_mjpeg = true;
         stub->read_wait_count = 0;
         stub->first_sample.clear();
+        stub->max_frame_size = 1024 * 1024;
     }
     log_line("Bambu_Close");
 }

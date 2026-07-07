@@ -50,6 +50,7 @@ using ReadSampleFn = int (*)(Bambu_Tunnel, Bambu_Sample *);
 using LastErrorFn = const char *(*)();
 using CloseFn = void (*)(Bambu_Tunnel);
 using DestroyFn = void (*)(Bambu_Tunnel);
+using SetLoggerFn = void (*)(Bambu_Tunnel, void (*)(void *, int, const char *), void *);
 
 template <typename T>
 T load_symbol(void *lib, const char *name)
@@ -60,10 +61,26 @@ T load_symbol(void *lib, const char *name)
     return reinterpret_cast<T>(symbol);
 }
 
+void probe_logger(void *, int level, const char *message)
+{
+    std::cout << "plugin_log level=" << level << " message=" << (message ? message : "") << "\n";
+}
+
+int call_start(const std::string &mode, StartStreamFn start_stream, StartStreamExFn start_stream_ex,
+               Bambu_Tunnel tunnel)
+{
+    if (mode == "ex")
+        return start_stream_ex(tunnel, 0x3000);
+    if (mode == "audio")
+        return start_stream(tunnel, false);
+    return start_stream(tunnel, true);
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 4) {
-        std::cerr << "usage: official-live-probe <libBambuSource.so> <host> <access-code> [authkey]\n";
+        std::cerr << "usage: official-live-probe <libBambuSource.so> <host> <access-code> [authkey] [mode] [extra-query]\n";
+        std::cerr << "modes: video, ex, audio, studio\n";
         return 2;
     }
 
@@ -71,6 +88,8 @@ int main(int argc, char **argv)
     const char *host = argv[2];
     const char *access = argv[3];
     const char *authkey = argc > 4 ? argv[4] : "";
+    const std::string mode = argc > 5 ? argv[5] : "video";
+    const char *extra_query = argc > 6 ? argv[6] : "";
 
     void *lib = dlopen(lib_path, RTLD_NOW | RTLD_LOCAL);
     if (!lib) {
@@ -90,6 +109,7 @@ int main(int argc, char **argv)
     auto last_error = load_symbol<LastErrorFn>(lib, "Bambu_GetLastErrorMsg");
     auto close = load_symbol<CloseFn>(lib, "Bambu_Close");
     auto destroy = load_symbol<DestroyFn>(lib, "Bambu_Destroy");
+    auto set_logger = load_symbol<SetLoggerFn>(lib, "Bambu_SetLogger");
     if (!init || !deinit || !create || !open || !start_stream || !start_stream_ex || !stream_count || !stream_info ||
         !read_sample || !last_error || !close || !destroy) {
         return 1;
@@ -102,6 +122,12 @@ int main(int argc, char **argv)
                       ".?port=6000&user=bblp&passwd=" + access;
     if (*authkey)
         url += std::string("&authkey=") + authkey;
+    if (*extra_query) {
+        if (extra_query[0] != '&')
+            url += '&';
+        url += extra_query;
+    }
+    std::cout << "mode=" << mode << " url=" << url << "\n";
 
     Bambu_Tunnel tunnel = nullptr;
     int rc = create(&tunnel, url.c_str());
@@ -111,6 +137,8 @@ int main(int argc, char **argv)
         deinit();
         return 1;
     }
+    if (set_logger)
+        set_logger(tunnel, probe_logger, nullptr);
 
     rc = open(tunnel);
     std::cout << "open_rc=" << rc << " last_error=" << last_error() << "\n";
@@ -122,8 +150,23 @@ int main(int argc, char **argv)
 
     bool started = false;
     for (int i = 0; i < 60; ++i) {
-        rc = start_stream(tunnel, true);
-        std::cout << "start_stream[" << i << "] rc=" << rc
+        if (mode == "studio" && i == 0) {
+            int count = stream_count(tunnel);
+            std::cout << "pre_start_stream_count=" << count << "\n";
+            Bambu_StreamInfo pre_info{};
+            int info_rc = stream_info(tunnel, 0, &pre_info);
+            std::cout << "pre_start_stream_info_rc=" << info_rc
+                      << " type=" << pre_info.type
+                      << " sub_type=" << pre_info.sub_type
+                      << " width=" << pre_info.format.video.width
+                      << " height=" << pre_info.format.video.height
+                      << " fps=" << pre_info.format.video.frame_rate
+                      << " format_type=" << pre_info.format_type
+                      << " max_frame_size=" << pre_info.max_frame_size
+                      << " last_error=" << last_error() << "\n";
+        }
+        rc = call_start(mode == "studio" ? "video" : mode, start_stream, start_stream_ex, tunnel);
+        std::cout << "start[" << i << "] rc=" << rc
                   << " last_error=" << last_error() << "\n";
         if (rc == 0) {
             started = true;

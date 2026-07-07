@@ -41,13 +41,16 @@ bool ssl_write_all(SSL *ssl, const uint8_t *data, size_t size)
     return true;
 }
 
-bool ssl_read_all(SSL *ssl, uint8_t *data, size_t size)
+bool ssl_read_all(SSL *ssl, uint8_t *data, size_t size, int *last_result = nullptr)
 {
     size_t offset = 0;
     while (offset < size) {
         int n = SSL_read(ssl, data + offset, static_cast<int>(size - offset));
-        if (n <= 0)
+        if (n <= 0) {
+            if (last_result)
+                *last_result = n;
             return false;
+        }
         offset += static_cast<size_t>(n);
     }
     return true;
@@ -78,20 +81,35 @@ bool write_raw_header_frame(SSL *ssl, uint32_t size, uint8_t b4, uint8_t b5, uin
     header.version = b7;
     header.sequence = sequence;
 
-    return ssl_write_all(ssl, reinterpret_cast<const uint8_t *>(&header), sizeof(header)) &&
-           (payload.empty() || ssl_write_all(ssl, payload.data(), payload.size()));
+    std::vector<uint8_t> frame(sizeof(header) + payload.size());
+    std::memcpy(frame.data(), &header, sizeof(header));
+    if (!payload.empty())
+        std::memcpy(frame.data() + sizeof(header), payload.data(), payload.size());
+    return ssl_write_all(ssl, frame.data(), frame.size());
 }
 
 bool read_frame(SSL *ssl, FrameHeader &header, std::vector<uint8_t> &payload)
 {
-    if (!ssl_read_all(ssl, reinterpret_cast<uint8_t *>(&header), sizeof(header)))
+    int last_result = 0;
+    if (!ssl_read_all(ssl, reinterpret_cast<uint8_t *>(&header), sizeof(header), &last_result)) {
+        std::cerr << "header read failed ssl_result=" << last_result
+                  << " ssl_error=" << SSL_get_error(ssl, last_result)
+                  << " err=" << ERR_get_error() << "\n";
         return false;
+    }
     if (header.size > 1024 * 1024) {
         std::cerr << "refusing oversized frame: " << header.size << "\n";
         return false;
     }
     payload.assign(header.size, 0);
-    return payload.empty() || ssl_read_all(ssl, payload.data(), payload.size());
+    if (!payload.empty() && !ssl_read_all(ssl, payload.data(), payload.size(), &last_result)) {
+        std::cerr << "payload read failed size=" << header.size
+                  << " ssl_result=" << last_result
+                  << " ssl_error=" << SSL_get_error(ssl, last_result)
+                  << " err=" << ERR_get_error() << "\n";
+        return false;
+    }
+    return true;
 }
 
 void dump_frame(const char *label, const FrameHeader &header, const std::vector<uint8_t> &payload)

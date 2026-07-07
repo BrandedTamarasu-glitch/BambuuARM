@@ -51,8 +51,27 @@ flatpak run --branch=50 --arch=aarch64 \
   -lssl -lcrypto \
   -o "$out_dir/probe-local-tunnel"
 
+host_cxx=""
+for candidate in g++ c++ clang++; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    host_cxx="$candidate"
+    break
+  fi
+done
+if [[ -n "$host_cxx" ]]; then
+  "$host_cxx" -std=c++17 -O2 -Wall -Wextra \
+    "$src_dir/tools/official_live_probe.cpp" \
+    -ldl \
+    -o "$out_dir/official-live-probe"
+else
+  echo "Skipping official-live-probe: no host C++ compiler found"
+fi
+
 file "$out_dir/libbambu_networking.so"
 file "$out_dir/libBambuSource.so"
 file "$out_dir/smoke-upload"
 file "$out_dir/smoke-bambu-source"
 file "$out_dir/probe-local-tunnel"
+if [[ -e "$out_dir/official-live-probe" ]]; then
+  file "$out_dir/official-live-probe"
+fi

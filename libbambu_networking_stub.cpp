@@ -237,6 +237,65 @@ std::string json_escape(const std::string &s)
     return out;
 }
 
+size_t find_json_object_end(const std::string &text, size_t object_start)
+{
+    if (object_start == std::string::npos || object_start >= text.size() || text[object_start] != '{')
+        return std::string::npos;
+
+    int depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    for (size_t i = object_start; i < text.size(); ++i) {
+        const char c = text[i];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (in_string) {
+            if (c == '\\')
+                escaped = true;
+            else if (c == '"')
+                in_string = false;
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+        } else if (c == '{') {
+            ++depth;
+        } else if (c == '}') {
+            --depth;
+            if (depth == 0)
+                return i;
+        }
+    }
+    return std::string::npos;
+}
+
+std::string ensure_local_liveview_advertised(const std::string &msg, bool *changed = nullptr)
+{
+    if (changed)
+        *changed = false;
+    const size_t ipcam_key = msg.find("\"ipcam\"");
+    if (ipcam_key == std::string::npos)
+        return msg;
+    const size_t object_start = msg.find('{', ipcam_key);
+    const size_t object_end = find_json_object_end(msg, object_start);
+    if (object_end == std::string::npos)
+        return msg;
+
+    const std::string ipcam = msg.substr(object_start, object_end - object_start + 1);
+    if (ipcam.find("\"liveview\"") != std::string::npos || ipcam.find("\"rtsp_url\"") != std::string::npos)
+        return msg;
+    if (ipcam.find("\"ipcam_dev\":\"1\"") == std::string::npos)
+        return msg;
+
+    std::string out = msg;
+    out.insert(object_end, ",\"liveview\":{\"local\":\"local\",\"remote\":\"none\"}");
+    if (changed)
+        *changed = true;
+    return out;
+}
+
 std::string path_basename(const std::string &path);
 
 std::string strip_extension(std::string name)
@@ -911,9 +970,13 @@ void mqtt_reader_loop(Agent *agent, std::string dev_id)
                 offset += 2;
             }
             std::string msg(reinterpret_cast<const char *>(payload.data() + offset), payload.size() - offset);
+            bool liveview_injected = false;
+            msg = ensure_local_liveview_advertised(msg, &liveview_injected);
             const size_t log_limit = 20000;
             log_line(agent, "mqtt publish received dev_id=" + dev_id + " bytes=" + std::to_string(msg.size()) +
                                 " payload=" + msg.substr(0, log_limit));
+            if (liveview_injected)
+                log_line(agent, "mqtt status injected ipcam.liveview local protocol");
             auto fn = agent->on_local_message ? agent->on_local_message : agent->on_message;
             if (fn) dispatch_callback(agent, [fn, dev_id, msg]() { fn(dev_id, msg); });
             if (qos == 1 && packet_id != 0) mqtt_send_puback(agent, packet_id);

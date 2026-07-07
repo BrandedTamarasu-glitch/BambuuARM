@@ -6,9 +6,9 @@ This is an experimental ARM64 replacement for Bambu Studio's
 It exports the symbols that Bambu Studio 2.7.1.62 resolves at startup and
 implements enough local/LAN behavior for an A1 in LAN mode to be discovered,
 restored from config, connected over TLS MQTT, monitored through printer status
-reports, uploaded over FTPS, and started with a local `project_file` print
-command. Cloud account, binding, and live camera/video are still intentionally
-unsupported.
+reports, uploaded over FTPS, started with a local `project_file` print command,
+and viewed through local LAN liveview. Cloud account and binding flows are still
+intentionally unsupported.
 
 Build:
 
@@ -109,11 +109,11 @@ Current verified state:
   `gcode_state:"RUNNING"`. The printer also generated `_plate_1.gcode` and
   `1_.2.0.bbl` in `cache/`.
 - `libBambuSource.so` now exports the complete `Bambu_*` media ABI expected by
-  Studio on ARM64. It creates/destroys tunnels, advertises one provisional H.264
-  stream for local liveview, implements both `Bambu_StartStream(true)` and
-  `Bambu_StartStreamEx(0x3000)`, and logs a controlled unsupported status for
-  non-local media instead of causing Studio's media code to report a
-  plugin-library/DLL load failure.
+  Studio on ARM64. It creates/destroys tunnels, opens local port-6000 TLS
+  liveview, advertises the printer's MJPEG stream, implements both
+  `Bambu_StartStream(true)` and `Bambu_StartStreamEx(0x3000)`, and logs a
+  controlled unsupported status for non-local media instead of causing Studio's
+  media code to report a plugin-library/DLL load failure.
 - The A1 status payload advertises an `ipcam` object with
   `ipcam_dev:"1"`, `resolution:"1080p"`, `tutk_server:"disable"`, and
   `mode_bits:3`, but it does not currently include `ipcam.liveview` or
@@ -122,27 +122,31 @@ Current verified state:
 - `build/probe-local-tunnel` implements the currently reverse-engineered port
   6000 TLS frame protocol. It matches the x86 plugin's observed credential
   slots, random initial sequence, cipher list, and optional no-SNI behavior.
-  The printer negotiates `TLSv1.2` with `ECDHE-RSA-AES256-GCM-SHA384`, but it
-  still times out without sending a local-tunnel frame. The likely remaining gap
-  is in Studio's local liveview state machine, not raw TLS connectivity.
+  The printer negotiates `TLSv1.2` with `ECDHE-RSA-AES256-GCM-SHA384`.
 - The live-video path has now been matched more closely to the x86 control
   flow: Studio calls `Bambu_Open`, then `Bambu_StartStream(true)`, then
-  `Bambu_GetStreamInfo`, then `Bambu_ReadSample`. Studio reaches "playing", but
-  `Bambu_ReadSample` still receives no bytes from the printer over the TLS
-  tunnel when using the older ARM payload layout.
+  `Bambu_GetStreamInfo`, then `Bambu_ReadSample`.
 - The x86 plugin was inspected on a working Bambu Studio session. Its
-  `BambuTunnelLocal::start(0x3000)` copies `passwd` into the first 32-byte slot
-  and `authkey` into the second 32-byte slot before sending the 64-byte live
-  control frame. The ARM shim previously sent the common LAN access code in the
-  second slot with the first slot zeroed; this has been corrected. The separate
-  16-byte auth frame also uses `authkey[8] + passwd[8]`, not `user[8] +
-  passwd[8]`.
-- A standalone `ctrl3000-long` probe sent the corrected x86-style 64-byte
-  control frame after stopping Studio's active camera connection. `ss -tnp`
-  showed no active `:6000` socket to the printer, but both SNI and no-SNI probe
-  runs still timed out through 60 read windows with no returned frames. Direct
-  RTSP-style ports 554, 8554, 322, and 8080 were refused; port 6000 is the only
-  open local-video candidate.
+  `BambuTunnelLocal::start(0x3000)` copies `user` into the first 32-byte slot
+  and `passwd` into the second 32-byte slot before sending the 64-byte live
+  control frame. A follow-up disassembly pass corrected an earlier mistaken
+  `passwd`/`authkey` interpretation: the referenced string was `"user"`, not an
+  authkey field. The separate non-video 16-byte auth frame uses the same
+  `user`-then-`passwd` slot order.
+- A follow-up disassembly pass found the critical wire-level difference:
+  official `LocalTunnel_Write` sends the 16-byte `0x3000` header and 64-byte
+  control payload as one contiguous `SSL_write`. Earlier ARM probes and the ARM
+  shim sent header and payload as separate TLS writes; that negotiated TLS but
+  produced no media frames.
+- After changing `probe-local-tunnel` to send the combined 80-byte control
+  record, the standalone aarch64 Flatpak probe received a media frame
+  immediately. The payload starts with `ff d8 ff e0 ... AVI1`, so this printer's
+  local liveview stream is JPEG/MJPEG, not H.264.
+- `libBambuSource.so` now matches the combined `0x3000` write, prefetches the
+  first media frame during `Bambu_GetStreamInfo`, advertises `MJPG` /
+  `video_jpeg` when the first sample is JPEG, and raises `max_frame_size` from
+  the old provisional 48 KB value to 1 MB. A Studio liveview test on ARM
+  confirmed video playback after these changes.
 - `tools/official_live_probe.cpp` loads the installed x86 `libBambuSource.so`
   and calls the official ABI outside Studio. It can `Bambu_Init`,
   `Bambu_Create`, and `Bambu_Open` the same LAN URL, but standalone
@@ -150,6 +154,44 @@ Current verified state:
   the `start_stream ok` transition seen in Studio's own log. That suggests
   Studio is providing an additional playback/session prerequisite or exact call
   sequence that the raw probe and standalone ABI harness do not yet reproduce.
+- Current ARM probing through the aarch64 Flatpak runtime requires
+  `--share=network`; without it, the local probe cannot connect even though the
+  host can reach the printer. With network sharing enabled, port 6000 negotiates
+  `TLSv1.2` / `ECDHE-RSA-AES256-GCM-SHA384`. Earlier empty/default-authkey
+  control-frame probes timed out, but those probes used the now-obsolete
+  `passwd`/`authkey` slot interpretation.
+- The ARM `libBambuSource.so` now logs local URL credential lengths and the
+  `0x3000` control-frame credential-slot lengths so the next Studio camera
+  preview test can confirm whether Studio provides an `authkey` or only the LAN
+  access code.
+- A follow-up x86 disassembly pass confirmed `Bambu_StartStream(true)` maps to
+  `Bambu_StartStreamEx(0x3000)`. On successful local liveview start, the common
+  x86 wrapper can return `Bambu_would_block` while samples are pending. Returning
+  `Bambu_would_block` directly from the ARM shim's `start_local_live` caused
+  Studio to repeatedly call `Bambu_StartStream(true)` and never advance to
+  `Bambu_ReadSample`, so the ARM shim keeps returning `Bambu_success` from
+  stream start and records concrete SSL read failure details in the sample path.
+- The ARM networking shim now normalizes full `push_status` payloads that
+  advertise `ipcam_dev:"1"` but omit `ipcam.liveview`/`ipcam.rtsp_url`, adding
+  `ipcam.liveview.local:"local"` and `remote:"none"` before handing the status
+  to Studio. A clean Studio restart on 2026-07-07 confirmed the forwarded full
+  status contains the injected liveview object. The timed launch did not open
+  the camera panel, so `libBambuSource.so` was not invoked during that run.
+- A 2026-07-07 Studio camera-panel test confirmed the current call order is
+  now correct (`Bambu_Open` -> `Bambu_StartStream(true)` -> `Bambu_GetStreamInfo`
+  -> repeated `Bambu_ReadSample`) and that the x86-style `user`/`passwd`
+  `0x3000` payload is sent. No media bytes arrived; reads stayed at
+  `SSL_ERROR_WANT_READ` until close. The combined-write probe result supersedes
+  that finding.
+- Direct RTSP-style ports 554, 8554, 322, and 8080 were refused; port 6000 is
+  the only open local-video candidate seen so far.
+- `tools/official_live_probe.cpp` now supports `video`, `ex`, `audio`, and
+  `studio` call-order modes plus optional extra query parameters. `build.sh`
+  builds it when a host C++ compiler is installed; this machine currently has no
+  host compiler, so only the ARM/aarch64 artifacts were rebuilt here.
+- `libBambuSource.so` now masks `passwd` and `authkey` query values in new
+  `Bambu_Create` log lines and treats `SSL_ERROR_ZERO_RETURN` as stream end
+  rather than continuing to report "playing" with no frames.
 
 Next phase:
 
@@ -158,33 +200,17 @@ Next phase:
   be surfaced differently to Studio.
 - Improve remote filename generation so uploaded files are not hidden dot names
   such as `.2.0.3mf`.
-- Continue camera/video as a separate phase. The ARM64 `libBambuSource.so` ABI
-  shim should now load cleanly, but it does not yet provide frames.
-- Camera phase scope:
-  - Re-test Studio camera preview and inspect `arm64_bambu_source.log` to
-    confirm whether the patched `Bambu_StartStreamEx`/stream-count behavior
-    changes the call order or whether it still reaches "playing" with repeated
-    `Bambu_ReadSample waiting count=N` entries.
-  - Continue reverse engineering the x86 `BambuTunnelLocal` implementation,
-    especially any live-control payload field not yet represented by
-    `probe-local-tunnel`. Current probes show that both `user/passwd` auth JSON
-    variants and the obvious x86-style `0x3000` frame credential variants
-    produce no response from the A1 on port 6000.
-  - Before more local-tunnel work, verify the printer-side LAN liveview setting
-    on the A1. The current MQTT `ipcam` payload advertises a camera but omits
-    both `ipcam.liveview` and `ipcam.rtsp_url`; the printer may be accepting TLS
-    on port 6000 while refusing to start liveview.
+- Camera follow-up scope:
+  - Keep `arm64_bambu_source.log` diagnostics around
+    `prefetch_stream_info_sample codec=mjpeg size=...` and `Bambu_ReadSample`
+    until the liveview path has had more soak time on ARM.
   - Compare Studio's exact playback/session setup against
-    `tools/official_live_probe.cpp`. The installed x86 plugin works when driven
-    by Studio, but the same plugin does not reach `start_stream ok` from the
-    standalone harness, so the missing piece is above the raw TLS frame send.
+    `tools/official_live_probe.cpp` only if standalone x86-vs-ARM probe parity
+    becomes useful again; Studio-driven ARM liveview is working with the current
+    combined-write shim.
   - Keep the direct RTSP path on hold unless the printer starts advertising
     `ipcam.rtsp_url`; probes showed 554/322 closed and only 6000 open for local
     video.
-  - Once port 6000 returns media frames, implement the minimal local camera
-    behavior in `libBambuSource_stub.cpp`: parse the `bambu:///local/` URL,
-    establish the TLS tunnel, start stream type 1, expose one H.264 stream, and
-    feed `Bambu_ReadSample` with framed video payloads.
   - Keep Agora/cloud video unsupported unless a specific local-only requirement
     is found.
 - Keep cloud login/binding unsupported unless there is a clear local-only reason
