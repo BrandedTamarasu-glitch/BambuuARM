@@ -185,6 +185,7 @@ int main(int argc, char **argv)
         std::cerr << "SSL_connect failed: " << ERR_get_error() << "\n";
         return 1;
     }
+    std::cout << "tls=" << SSL_get_version(ssl) << " cipher=" << SSL_get_cipher(ssl) << "\n";
 
     std::vector<uint8_t> auth(16, 0);
     if (variant == "pass-user") {
@@ -196,6 +197,11 @@ int main(int argc, char **argv)
     } else if (variant == "user-user") {
         std::memcpy(auth.data(), "bblp", 4);
         std::memcpy(auth.data() + 8, "bblp", 4);
+    } else if (variant == "x86-empty-pass") {
+        std::memcpy(auth.data() + 8, access, std::min<size_t>(8, std::strlen(access)));
+    } else if (variant == "x86-default-pass") {
+        std::memcpy(auth.data(), "888888", 6);
+        std::memcpy(auth.data() + 8, access, std::min<size_t>(8, std::strlen(access)));
     } else {
         std::memcpy(auth.data(), "bblp", 4);
         std::memcpy(auth.data() + 8, access, std::min<size_t>(8, std::strlen(access)));
@@ -225,6 +231,11 @@ int main(int argc, char **argv)
             put32(32, access);
         } else if (variant == "default-default") {
             put32(0, "888888");
+            put32(32, "888888");
+        } else if (variant == "x86-pass-empty") {
+            put32(0, access);
+        } else if (variant == "x86-pass-authkey") {
+            put32(0, access);
             put32(32, "888888");
         } else {
             put32(0, "bblp");

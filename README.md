@@ -120,23 +120,36 @@ Current verified state:
   `ipcam.rtsp_url`. Bambu Studio's LAN video path therefore depends on the
   `bambu:///local/<ip>.?port=6000&user=bblp&passwd=<access>` local tunnel.
 - `build/probe-local-tunnel` implements the currently reverse-engineered port
-  6000 TLS frame protocol. It matches the x86 plugin's `user`/`passwd` auth
-  fields, random initial sequence, cipher list, and optional no-SNI behavior,
-  but the printer still times out without sending the first auth response. The
-  likely remaining gap is in the local tunnel protocol, not the exported
-  `Bambu_*` ABI.
+  6000 TLS frame protocol. It matches the x86 plugin's observed credential
+  slots, random initial sequence, cipher list, and optional no-SNI behavior.
+  The printer negotiates `TLSv1.2` with `ECDHE-RSA-AES256-GCM-SHA384`, but it
+  still times out without sending a local-tunnel frame. The likely remaining gap
+  is in Studio's local liveview state machine, not raw TLS connectivity.
 - The live-video path has now been matched more closely to the x86 control
   flow: Studio calls `Bambu_Open`, then `Bambu_StartStream(true)`, then
-  `Bambu_GetStreamInfo`, then `Bambu_ReadSample`. The ARM shim sends the
-  x86-style 64-byte `0x3000` live-control frame as zeroed `authkey[32]` plus
-  `passwd[32]`. Studio reaches "playing", but `Bambu_ReadSample` still receives
-  no bytes from the printer over the TLS tunnel.
-- A standalone `ctrl3000-long` probe sent the same 64-byte control frame and
-  waited through 60 read windows with no bytes returned by the printer. Tested
-  payload layouts include empty `authkey` plus access code, access code in both
-  slots, access code plus `888888`, `888888` plus access code, and `888888` in
-  both slots. Direct RTSP-style ports 554, 8554, 322, and 8080 were refused;
-  port 6000 is the only open local-video candidate.
+  `Bambu_GetStreamInfo`, then `Bambu_ReadSample`. Studio reaches "playing", but
+  `Bambu_ReadSample` still receives no bytes from the printer over the TLS
+  tunnel when using the older ARM payload layout.
+- The x86 plugin was inspected on a working Bambu Studio session. Its
+  `BambuTunnelLocal::start(0x3000)` copies `passwd` into the first 32-byte slot
+  and `authkey` into the second 32-byte slot before sending the 64-byte live
+  control frame. The ARM shim previously sent the common LAN access code in the
+  second slot with the first slot zeroed; this has been corrected. The separate
+  16-byte auth frame also uses `authkey[8] + passwd[8]`, not `user[8] +
+  passwd[8]`.
+- A standalone `ctrl3000-long` probe sent the corrected x86-style 64-byte
+  control frame after stopping Studio's active camera connection. `ss -tnp`
+  showed no active `:6000` socket to the printer, but both SNI and no-SNI probe
+  runs still timed out through 60 read windows with no returned frames. Direct
+  RTSP-style ports 554, 8554, 322, and 8080 were refused; port 6000 is the only
+  open local-video candidate.
+- `tools/official_live_probe.cpp` loads the installed x86 `libBambuSource.so`
+  and calls the official ABI outside Studio. It can `Bambu_Init`,
+  `Bambu_Create`, and `Bambu_Open` the same LAN URL, but standalone
+  `Bambu_StartStream(true)` remains in would-block/error state and never reaches
+  the `start_stream ok` transition seen in Studio's own log. That suggests
+  Studio is providing an additional playback/session prerequisite or exact call
+  sequence that the raw probe and standalone ABI harness do not yet reproduce.
 
 Next phase:
 
@@ -161,10 +174,10 @@ Next phase:
     on the A1. The current MQTT `ipcam` payload advertises a camera but omits
     both `ipcam.liveview` and `ipcam.rtsp_url`; the printer may be accepting TLS
     on port 6000 while refusing to start liveview.
-  - If possible, run the official x86 Bambu Studio/plugin and test liveview on
-    the same printer. If official x86 also fails, this is printer setting or
-    firmware state rather than the ARM shim. If official x86 works, capture or
-    compare the bytes it sends on port 6000.
+  - Compare Studio's exact playback/session setup against
+    `tools/official_live_probe.cpp`. The installed x86 plugin works when driven
+    by Studio, but the same plugin does not reach `start_stream ok` from the
+    standalone harness, so the missing piece is above the raw TLS frame send.
   - Keep the direct RTSP path on hold unless the printer starts advertising
     `ipcam.rtsp_url`; probes showed 554/322 closed and only 6000 open for local
     video.
