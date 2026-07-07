@@ -16,6 +16,13 @@ Build:
 ./build.sh
 ```
 
+By default, `build.sh` expects a Bambu Studio source checkout at
+`$HOME/Downloads/BambuStudio-source`. To use a different checkout:
+
+```sh
+BAMBU_STUDIO_SOURCE_DIR=/path/to/BambuStudio-source ./build.sh
+```
+
 `./build.sh` produces:
 
 ```text
@@ -120,7 +127,7 @@ Optional manual LAN discovery seed file:
 Each non-comment line must be one full discovery JSON object:
 
 ```json
-{"dev_name":"Bambu Lab A1","dev_id":"SERIAL_OR_DEVICE_ID","dev_ip":"192.168.1.50","dev_type":"N2S","dev_signal":"-50","connect_type":"lan","bind_state":"free","sec_link":"secure"}
+{"dev_name":"Bambu Lab A1","dev_id":"SERIAL_OR_DEVICE_ID","dev_ip":"192.0.2.50","dev_type":"N2S","dev_signal":"-50","connect_type":"lan","bind_state":"free","sec_link":"secure"}
 ```
 
 For the printer discovered during Phase 2, this helper writes a LAN-mode seed:
@@ -129,9 +136,8 @@ For the printer discovered during Phase 2, this helper writes a LAN-mode seed:
 ./seed-discovered-a1-lan.sh
 ```
 
-For the current test printer, this helper writes Bambu Studio's saved LAN access
-state, including the encoded `user_access_dev_ip` value required by Studio's
-local-printer restore path:
+This helper writes Bambu Studio's saved LAN access state, including the encoded
+`user_access_dev_ip` value required by Studio's local-printer restore path:
 
 ```sh
 ./seed-lan-config.py
@@ -155,8 +161,8 @@ Current verified state:
   over FTPS using libcurl. The A1 profile's `sdcard/` folder is mapped to
   `cache/`, which is the writable FTPS directory seen on this printer.
 - `build/smoke-upload` loads the plugin with `dlopen` and verifies the real
-  `bambu_network_start_send_gcode_to_sdcard` export. The latest smoke test
-  uploaded `/etc/hostname` to `cache/hostname` and returned `rc=0`.
+  `bambu_network_start_send_gcode_to_sdcard` export against a caller-supplied
+  local file.
 - `bambu_network_start_local_print_with_record` and
   `bambu_network_start_local_print` now upload the file over FTPS and publish a
   `project_file` MQTT command pointing at `file:///sdcard/cache/<file>`.

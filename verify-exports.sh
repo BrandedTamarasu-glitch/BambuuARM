@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-src_root="${1:-/home/coryebert/Downloads/BambuStudio-source}"
+src_root="${1:-${BAMBU_STUDIO_SOURCE_DIR:-$HOME/Downloads/BambuStudio-source}}"
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 network_lib="${2:-$project_dir/build/libbambu_networking.so}"
 source_lib="${3:-$project_dir/build/libBambuSource.so}"
