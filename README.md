@@ -120,6 +120,19 @@ Unsupported behavior:
 - Agora/cloud video.
 - Direct RTSP unless a printer advertises a usable `ipcam.rtsp_url`.
 
+Known limitations:
+
+- Tested with a Bambu Lab A1 in LAN mode on ARM64 Linux.
+- First connection to each LAN TLS service must happen on a trusted LAN because
+  the plugin stores a first-use certificate/public-key pin.
+- If the printer certificate changes, connections will fail until the matching
+  entry is removed from `arm64_trusted_tls_pins.txt`.
+- The `build/smoke-upload`, `build/probe-local-tunnel`, and
+  `build/official-live-probe` binaries are developer diagnostics. They are not
+  intended as end-user release artifacts.
+- Runtime logs are diagnostic only and intentionally avoid raw access codes,
+  raw MQTT payloads, and raw discovery payloads.
+
 License:
 
 This project is released under the MIT License. See [LICENSE](LICENSE).

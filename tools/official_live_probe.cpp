@@ -25,8 +25,9 @@ struct Bambu_StreamInfo {
     int sub_type;
     BambuStreamFormat format;
     int format_type;
+    int format_size;
     int max_frame_size;
-    char reserved[128];
+    const unsigned char *format_buffer;
 };
 
 struct Bambu_Sample {
