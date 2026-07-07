@@ -137,6 +137,12 @@ License:
 
 This project is released under the MIT License. See [LICENSE](LICENSE).
 
+Release and security notes:
+
+- See [CHANGELOG.md](CHANGELOG.md) for tagged release history.
+- See [SECURITY.md](SECURITY.md) for supported versions, vulnerability
+  reporting, and local TLS pinning guidance.
+
 Troubleshooting:
 
 - If Studio does not load the plugin, run `./verify-exports.sh` and check the
@@ -282,10 +288,9 @@ Current verified state:
 Post-release follow-up:
 
 - Get confirmation from another ARM64 Linux user and another LAN-mode printer.
-- Add `CHANGELOG.md` and `SECURITY.md` before the next tagged release.
 - Keep the release source-only unless binary packaging is added intentionally;
   developer diagnostic binaries should not be shipped as end-user artifacts.
-- Improve remote filename generation so uploaded files are always readable and
-  never hidden dot names.
+- Continue compatibility testing for readable remote filenames across Studio
+  export paths and printer models.
 - Keep cloud login, binding, Agora/cloud video, and direct RTSP unsupported
   unless a specific local-only requirement is found.

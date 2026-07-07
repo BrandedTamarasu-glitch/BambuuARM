@@ -601,6 +601,62 @@ std::string path_basename(const std::string &path)
     return path.substr(pos + 1);
 }
 
+std::string path_extension(const std::string &path)
+{
+    const std::string base = path_basename(path);
+    const auto dot = base.find_last_of('.');
+    if (dot == std::string::npos || dot == 0 || dot + 1 == base.size()) return {};
+    return base.substr(dot);
+}
+
+std::string sanitize_remote_stem(const std::string &name)
+{
+    std::string out;
+    bool last_sep = false;
+    for (unsigned char ch : name) {
+        if (std::isalnum(ch)) {
+            out.push_back(static_cast<char>(ch));
+            last_sep = false;
+        } else if (ch == '-' || ch == '_') {
+            out.push_back(static_cast<char>(ch));
+            last_sep = false;
+        } else if (!last_sep) {
+            out.push_back('_');
+            last_sep = true;
+        }
+    }
+    while (!out.empty() && (out.front() == '.' || out.front() == '_' || out.front() == '-' || std::isspace(static_cast<unsigned char>(out.front())))) {
+        out.erase(out.begin());
+    }
+    while (!out.empty() && (out.back() == '.' || out.back() == '_' || out.back() == '-' || std::isspace(static_cast<unsigned char>(out.back())))) {
+        out.pop_back();
+    }
+    return out;
+}
+
+std::string remote_upload_filename(const BBL::PrintParams &params, const std::string &local_path)
+{
+    std::string ext = path_extension(local_path);
+    if (ext.empty()) ext = ".3mf";
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    const std::string local_base = path_basename(local_path);
+    std::string stem = !params.project_name.empty() ? params.project_name :
+                       !params.task_name.empty() ? params.task_name :
+                       strip_extension(local_base);
+    stem = sanitize_remote_stem(stem);
+    if (stem.empty()) stem = "upload";
+
+    std::string safe_ext;
+    for (unsigned char ch : ext) {
+        if (std::isalnum(ch) || ch == '.') safe_ext.push_back(static_cast<char>(ch));
+    }
+    if (safe_ext.empty() || safe_ext == ".") safe_ext = ".3mf";
+    if (safe_ext.front() != '.') safe_ext.insert(safe_ext.begin(), '.');
+
+    return stem + safe_ext;
+}
+
 std::string normalize_remote_folder(std::string folder)
 {
     folder = trim(folder);
@@ -620,8 +676,8 @@ bool ftps_upload_file(Agent *agent, const BBL::PrintParams &params, const std::s
         error = "missing access code";
         return false;
     }
-    const std::string base = path_basename(local_path);
-    if (base.empty()) {
+    const std::string remote_name = remote_upload_filename(params, local_path);
+    if (remote_name.empty()) {
         error = "missing local filename";
         return false;
     }
@@ -642,7 +698,7 @@ bool ftps_upload_file(Agent *agent, const BBL::PrintParams &params, const std::s
         return false;
     }
 
-    char *escaped = curl_easy_escape(curl, base.c_str(), static_cast<int>(base.size()));
+    char *escaped = curl_easy_escape(curl, remote_name.c_str(), static_cast<int>(remote_name.size()));
     if (!escaped) {
         curl_easy_cleanup(curl);
         std::fclose(file);
@@ -1699,14 +1755,14 @@ int bambu_network_start_print(void *agent, BBL::PrintParams, BBL::OnUpdateStatus
 int bambu_network_start_local_print_with_record(void *agent, BBL::PrintParams params, BBL::OnUpdateStatusFn update, BBL::WasCancelledFn cancel, BBL::OnWaitFn)
 {
     auto *a = static_cast<Agent *>(agent);
-    log_line(a, std::string(__func__) + " dev_id=" + params.dev_id + " dev_ip=" + params.dev_ip +
+    log_line(a, std::string(__func__) + " dev_id=" + masked_len(params.dev_id) + " dev_ip=" + masked_len(params.dev_ip) +
                     " filename=" + path_basename(params.filename) + " folder=" + params.ftp_folder);
     return local_upload_and_start_print(a, std::move(params), std::move(update), std::move(cancel));
 }
 int bambu_network_start_send_gcode_to_sdcard(void *agent, BBL::PrintParams params, BBL::OnUpdateStatusFn update, BBL::WasCancelledFn cancel, BBL::OnWaitFn)
 {
     auto *a = static_cast<Agent *>(agent);
-    log_line(a, std::string(__func__) + " dev_id=" + params.dev_id + " dev_ip=" + params.dev_ip +
+    log_line(a, std::string(__func__) + " dev_id=" + masked_len(params.dev_id) + " dev_ip=" + masked_len(params.dev_ip) +
                     " filename=" + path_basename(params.filename) + " folder=" + params.ftp_folder);
     if (!a) return kInvalid;
     if (cancel && cancel()) return BAMBU_NETWORK_ERR_CANCELED;
@@ -1727,7 +1783,7 @@ int bambu_network_start_send_gcode_to_sdcard(void *agent, BBL::PrintParams param
 int bambu_network_start_local_print(void *agent, BBL::PrintParams params, BBL::OnUpdateStatusFn update, BBL::WasCancelledFn cancel)
 {
     auto *a = static_cast<Agent *>(agent);
-    log_line(a, std::string(__func__) + " dev_id=" + params.dev_id + " dev_ip=" + params.dev_ip +
+    log_line(a, std::string(__func__) + " dev_id=" + masked_len(params.dev_id) + " dev_ip=" + masked_len(params.dev_ip) +
                     " filename=" + path_basename(params.filename) + " folder=" + params.ftp_folder);
     return local_upload_and_start_print(a, std::move(params), std::move(update), std::move(cancel));
 }
