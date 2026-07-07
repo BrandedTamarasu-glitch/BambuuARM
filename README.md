@@ -26,6 +26,35 @@ build/smoke-bambu-source
 build/probe-local-tunnel
 ```
 
+Quick start:
+
+1. Install Bambu Studio as a Flatpak and launch it once so its user config
+   directory exists.
+2. Put the printer in LAN mode and make sure this ARM device can reach the
+   printer on the same network.
+3. Build the ARM64 plugin binaries:
+
+   ```sh
+   ./build.sh
+   ```
+
+4. Install the rebuilt plugins into Bambu Studio's user Flatpak config:
+
+   ```sh
+   ./install-flatpak-user.sh
+   ```
+
+5. Seed or restore the LAN printer entry if Studio does not discover it
+   automatically:
+
+   ```sh
+   ./seed-lan-config.py
+   ```
+
+6. Restart Bambu Studio. The printer should appear as a LAN printer. Local
+   status, FTPS upload, local print start, and LAN liveview are the intended
+   working paths.
+
 Install into the user Flatpak config:
 
 ```sh
@@ -50,6 +79,33 @@ Runtime diagnostics are written to:
 ~/.var/app/com.bambulab.BambuStudio/config/BambuStudio/arm64_network_stub.log
 ~/.var/app/com.bambulab.BambuStudio/config/BambuStudio/arm64_bambu_source.log
 ```
+
+Supported local behavior:
+
+- LAN discovery and configured-printer restore.
+- TLS MQTT status monitoring on port `8883`.
+- FTPS file upload on port `990`.
+- Local `project_file` print start using the uploaded 3MF.
+- LAN liveview through the local port-`6000` tunnel. The implemented stream path
+  matches the x86 plugin's combined `0x3000` TLS write and advertises the
+  printer's MJPEG frames to Studio.
+
+Unsupported behavior:
+
+- Bambu cloud login, cloud binding, and account-backed remote access.
+- Agora/cloud video.
+- Direct RTSP unless a printer advertises a usable `ipcam.rtsp_url`.
+
+Troubleshooting:
+
+- If Studio does not load the plugin, run `./verify-exports.sh` and check the
+  two `arm64_*` log files listed above.
+- If liveview opens but stays blank, inspect `arm64_bambu_source.log` for
+  `prefetch_stream_info_sample codec=mjpeg size=...`.
+- If upload or local print fails, inspect `arm64_network_stub.log` for the FTPS
+  path and MQTT command result.
+- Re-run `./install-flatpak-user.sh` after every rebuild; Bambu Studio loads the
+  installed copies from its Flatpak config directory.
 
 Optional manual LAN discovery seed file:
 
