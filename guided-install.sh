@@ -108,19 +108,21 @@ print_file_summary() {
 
 maybe_run_diagnostics() {
   if [[ "$run_diagnostics" == "1" ]]; then
-    "$project_dir/collect-diagnostics.sh"
+    BAMBU_STUDIO_SOURCE_DIR="$source_dir" "$project_dir/collect-diagnostics.sh"
     return
   fi
   if [[ -t 0 ]] && confirm "Collect a redacted diagnostics bundle now?"; then
-    "$project_dir/collect-diagnostics.sh"
+    BAMBU_STUDIO_SOURCE_DIR="$source_dir" "$project_dir/collect-diagnostics.sh"
   fi
 }
 
 bambu_studio_processes() {
   ps -eo pid=,comm=,args= | awk '
-    /\/app\/bin\/bambu-studio/ ||
+    /(^|[[:space:]])\/app\/bin\/bambu-studio([[:space:]]|$)/ ||
+    /(^|[[:space:]])bambu-studio([[:space:]]|$)/ ||
     /flatpak run .*com\.bambulab\.BambuStudio/ ||
-    /com\.bambulab\.BambuStudio/ {
+    /--app-id[= ]com\.bambulab\.BambuStudio/ ||
+    /(^|[[:space:]])app\/com\.bambulab\.BambuStudio\// {
       if ($0 !~ /awk / && $0 !~ /guided-install\.sh/)
         print
     }'
@@ -139,6 +141,17 @@ ensure_studio_not_running() {
     return 0
   fi
   die "close Bambu Studio before install/restore, or rerun with --force"
+}
+
+ensure_config_file_ready() {
+  [[ -f "$config_file" && -r "$config_file" && -w "$config_file" ]] || die "BambuStudio.conf must exist and be readable/writable: $config_file"
+  python3 - "$config_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+json.loads(Path(sys.argv[1]).read_text())
+PY
 }
 
 backup_stamps() {
@@ -250,6 +263,12 @@ doctor() {
     echo "Config directory: $config_dir"
   else
     echo "Config directory missing: $config_dir"
+    failures=$((failures + 1))
+  fi
+  if [[ -f "$config_file" && -r "$config_file" ]]; then
+    echo "Config file: $config_file"
+  else
+    echo "Config file missing or unreadable: $config_file"
     failures=$((failures + 1))
   fi
   echo "Plugin directory: $plugin_dir"
@@ -418,9 +437,12 @@ need_command flatpak
 need_command file
 need_command readelf
 need_command git
+need_command rg
+need_command python3
 
 config_dir="$HOME/.var/app/com.bambulab.BambuStudio/config/BambuStudio"
 plugin_dir="$config_dir/plugins"
+config_file="$config_dir/BambuStudio.conf"
 
 [[ -d "$config_dir" ]] || die "Bambu Studio Flatpak config not found: $config_dir. Launch Bambu Studio once first."
 
@@ -448,6 +470,10 @@ fi
 
 echo "Bambu Studio source: $source_dir"
 echo
+
+if [[ "$do_install" == "1" ]]; then
+  ensure_config_file_ready
+fi
 
 [[ -d "$source_dir" ]] || die "Bambu Studio source checkout not found: $source_dir. Pass --source-dir PATH or set BAMBU_STUDIO_SOURCE_DIR."
 [[ -f "$source_dir/src/slic3r/Utils/NetworkAgent.cpp" ]] || die "source checkout does not look like Bambu Studio source: $source_dir"

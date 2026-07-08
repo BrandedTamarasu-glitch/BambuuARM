@@ -69,7 +69,9 @@ def main():
     app["user_last_selected_machine"] = dev_id
     app["enable_ssl_for_mqtt"] = True
     app["enable_ssl_for_ftp"] = True
-    CONFIG.write_text(json.dumps(data, indent=4) + "\n")
+    tmp = CONFIG.with_name(f".{CONFIG.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(data, indent=4) + "\n")
+    os.replace(tmp, CONFIG)
     print(f"seeded {dev_id} at {dev_ip}")
 
 

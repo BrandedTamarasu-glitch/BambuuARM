@@ -6,6 +6,7 @@ stamp="$(date +%Y%m%d-%H%M%S)"
 out_dir="$project_dir/diagnostics/bambuuarm-$stamp"
 archive="$out_dir.tar.gz"
 config_dir="$HOME/.var/app/com.bambulab.BambuStudio/config/BambuStudio"
+source_dir="${BAMBU_STUDIO_SOURCE_DIR:-$HOME/Downloads/BambuStudio-source}"
 
 mkdir -p "$out_dir"
 
@@ -20,6 +21,8 @@ redact_file() {
   sed -E \
     -e "s/${escaped_home}/<home>/g" \
     -e 's/(passwd|password|access[_-]?code|token|authkey)(["=:_ ]+)[^", &]+/\1\2<redacted>/Ig' \
+    -e 's/("dev_id"[[:space:]]*:[[:space:]]*")[^"]+/\1<redacted-dev-id>/g' \
+    -e 's/("dev_name"[[:space:]]*:[[:space:]]*")[^"]+/\1<redacted-printer-name>/g' \
     -e 's/(BAMBU_ACCESS_CODE=)[^[:space:]]+/\1<redacted>/g' \
     -e 's#(bambu://[^?[:space:]]+\?[^[:space:]]*(passwd|password|authkey)=)[^&[:space:]]+#\1<redacted>#Ig' \
     -e 's/\b(10|127|169\.254|172\.(1[6-9]|2[0-9]|3[0-1])|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}\b/<redacted-ip>/g' \
@@ -40,6 +43,7 @@ write_command() {
   echo "generated=$stamp"
   echo "project_dir=$project_dir"
   echo "config_dir=$config_dir"
+  echo "source_dir=$source_dir"
 } > "$out_dir/summary.txt"
 
 write_command git-status git -C "$project_dir" status --short
@@ -47,7 +51,7 @@ write_command git-head git -C "$project_dir" log -1 --oneline
 write_command git-tags git -C "$project_dir" tag --points-at HEAD
 write_command uname uname -a
 write_command flatpak-info flatpak info com.bambulab.BambuStudio
-write_command verify-exports "$project_dir/verify-exports.sh"
+write_command verify-exports "$project_dir/verify-exports.sh" "$source_dir"
 write_command build-files file "$project_dir/build/libbambu_networking.so" "$project_dir/build/libBambuSource.so"
 write_command buildids readelf -n "$project_dir/build/libbambu_networking.so" "$project_dir/build/libBambuSource.so"
 

@@ -7,7 +7,8 @@ latest `main` branch and the latest tagged release.
 
 | Version | Supported |
 | --- | --- |
-| `v0.1.0-arm64-lan` | Yes |
+| `v0.1.2-arm64-lan` | Yes |
+| `v0.1.1-arm64-lan` and older | No |
 
 ## Scope
 
@@ -16,8 +17,10 @@ does not implement cloud login, cloud binding, account-backed remote access, or
 cloud video.
 
 The plugin uses first-use TLS certificate/public-key pinning for local printer
-services. The first connection to a printer must happen on a trusted LAN. If a
-printer mainboard or certificate changes, remove the matching entry from:
+services. LAN discovery itself is unauthenticated, so the first connection to a
+printer must happen on a trusted LAN and users should verify they are selecting
+the expected printer/IP before entering a LAN access code. If a printer
+mainboard or certificate changes, remove the matching entry from:
 
 ```text
 ~/.var/app/com.bambulab.BambuStudio/config/BambuStudio/arm64_trusted_tls_pins.txt

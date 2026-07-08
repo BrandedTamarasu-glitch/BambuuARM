@@ -85,15 +85,16 @@ flow:
 For unattended setup:
 
 ```sh
-./guided-install.sh --yes --seed-lan \
+BAMBU_ACCESS_CODE=ACCESS_CODE ./guided-install.sh --yes --seed-lan \
   --seed-dev-id SERIAL_OR_DEVICE_ID \
   --seed-dev-ip 192.0.2.50 \
-  --access-code ACCESS_CODE \
   --discovery-seed
 ```
 
 For normal interactive use, omit `--access-code` and enter it at the hidden
-prompt.
+prompt. Avoid passing the LAN access code on the command line on shared systems;
+command-line arguments can be visible through process listings and shell
+history.
 
 ## Installer Safety And Recovery
 
@@ -219,8 +220,15 @@ Verify media shim load behavior:
 Direct LAN config seed helper:
 
 ```sh
-./seed-lan-config.py SERIAL_OR_DEVICE_ID 192.0.2.50 ACCESS_CODE
+BAMBU_DEV_ID=SERIAL_OR_DEVICE_ID \
+BAMBU_DEV_IP=192.0.2.50 \
+BAMBU_ACCESS_CODE=ACCESS_CODE \
+./seed-lan-config.py
 ```
+
+The helper still accepts positional arguments for automation, but prefer
+environment variables or the guided installer's hidden prompt when command
+history or process listings are a concern.
 
 Optional manual discovery seed helper:
 
@@ -273,6 +281,7 @@ This project is released under the MIT License. See [LICENSE](LICENSE).
 - Validated by the maintainer on ARM64 Linux with a Bambu Lab A1 in LAN mode.
   Additional printer, firmware, and distro validation is still needed.
 - First connection to each LAN TLS service must happen on a trusted LAN because
-  the plugin stores a first-use certificate/public-key pin.
+  the plugin stores a first-use certificate/public-key pin. LAN discovery is not
+  authenticated, so verify the selected printer/IP before first connection.
 - Future Bambu Studio or printer firmware changes may require compatibility
   updates.

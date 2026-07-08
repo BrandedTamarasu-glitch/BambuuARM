@@ -4,7 +4,19 @@ All notable release changes for this project are documented here.
 
 ## Unreleased
 
-No unreleased changes yet.
+### Changed
+
+- Hardened Flatpak plugin install so staged plugin files are prepared before
+  active files are replaced and prior plugins are restored if install fails.
+- Added guided-installer preflight checks for `rg`, `python3`, and writable
+  `BambuStudio.conf` on install paths.
+- Changed LAN discovery seed writing to use JSON serialization, preserve other
+  seed entries, and update the seed file atomically.
+- Changed LAN config seeding to write `BambuStudio.conf` atomically.
+- Redacted printer names and device IDs from diagnostics bundles.
+- Documented first-use TLS pinning risk around unauthenticated LAN discovery and
+  updated the supported security release line.
+- Added tag pushes to the CI trigger.
 
 ## v0.1.2-arm64-lan - 2026-07-08
 
