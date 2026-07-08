@@ -79,6 +79,10 @@ struct Agent {
     bool connected_use_ssl = false;
     std::mutex cert_mutex;
     std::set<std::string> cert_installed_devices;
+    std::string ftps_pin_host;
+    int ftps_pin_port = 0;
+    std::string ftps_spki_pin;
+    std::string ftps_ca_cert_path;
     int mqtt_fd = -1;
     SSL_CTX *ssl_ctx = nullptr;
     SSL *ssl = nullptr;
@@ -346,6 +350,35 @@ bool fetch_tls_pin(Agent *agent, const std::string &host, int port,
     SSL_CTX_free(ctx);
     close(fd);
     return trusted && wrote_cert;
+}
+
+bool ftps_tls_pin_for_upload(Agent *agent, const std::string &host, int port,
+                             std::string &spki_pin, std::string &ca_cert_path, std::string &error)
+{
+    if (!agent) return fetch_tls_pin(agent, host, port, spki_pin, ca_cert_path, error);
+    {
+        std::lock_guard<std::mutex> lock(agent->cert_mutex);
+        if (agent->ftps_pin_host == host && agent->ftps_pin_port == port &&
+            !agent->ftps_spki_pin.empty() && !agent->ftps_ca_cert_path.empty()) {
+            spki_pin = agent->ftps_spki_pin;
+            ca_cert_path = agent->ftps_ca_cert_path;
+            log_debug(agent, "ftps pin cache hit host=" + masked_len(host) + " port=" + std::to_string(port));
+            return true;
+        }
+    }
+
+    if (!fetch_tls_pin(agent, host, port, spki_pin, ca_cert_path, error))
+        return false;
+
+    {
+        std::lock_guard<std::mutex> lock(agent->cert_mutex);
+        agent->ftps_pin_host = host;
+        agent->ftps_pin_port = port;
+        agent->ftps_spki_pin = spki_pin;
+        agent->ftps_ca_cert_path = ca_cert_path;
+    }
+    log_debug(agent, "ftps pin cache store host=" + masked_len(host) + " port=" + std::to_string(port));
+    return true;
 }
 
 template <class Fn>
@@ -791,7 +824,7 @@ bool ftps_upload_file(Agent *agent, const BBL::PrintParams &params, const std::s
     if (file_size >= 0) curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, static_cast<curl_off_t>(file_size));
     std::string spki_pin;
     std::string ca_cert_path;
-    if (!fetch_tls_pin(agent, params.dev_ip, 990, spki_pin, ca_cert_path, error)) {
+    if (!ftps_tls_pin_for_upload(agent, params.dev_ip, 990, spki_pin, ca_cert_path, error)) {
         curl_easy_cleanup(curl);
         std::fclose(file);
         return false;
@@ -1662,24 +1695,44 @@ int local_upload_and_start_print(Agent *agent, BBL::PrintParams params, BBL::OnU
 void set_connected(Agent *agent, const std::string &dev_id, const std::string &dev_ip, int port, bool use_ssl,
                    const std::string &username, const std::string &password)
 {
-    std::lock_guard<std::mutex> lock(agent->connection_mutex);
-    agent->connected_dev_id = dev_id;
-    agent->connected_dev_ip = dev_ip;
-    agent->connected_username = username;
-    agent->connected_password = password;
-    agent->connected_port = port;
-    agent->connected_use_ssl = use_ssl;
+    {
+        std::lock_guard<std::mutex> lock(agent->connection_mutex);
+        agent->connected_dev_id = dev_id;
+        agent->connected_dev_ip = dev_ip;
+        agent->connected_username = username;
+        agent->connected_password = password;
+        agent->connected_port = port;
+        agent->connected_use_ssl = use_ssl;
+    }
+    {
+        std::lock_guard<std::mutex> lock(agent->cert_mutex);
+        if (agent->ftps_pin_host != dev_ip) {
+            agent->ftps_pin_host.clear();
+            agent->ftps_pin_port = 0;
+            agent->ftps_spki_pin.clear();
+            agent->ftps_ca_cert_path.clear();
+        }
+    }
 }
 
 void clear_connected(Agent *agent)
 {
-    std::lock_guard<std::mutex> lock(agent->connection_mutex);
-    agent->connected_dev_id.clear();
-    agent->connected_dev_ip.clear();
-    agent->connected_username.clear();
-    agent->connected_password.clear();
-    agent->connected_port = 0;
-    agent->connected_use_ssl = false;
+    {
+        std::lock_guard<std::mutex> lock(agent->connection_mutex);
+        agent->connected_dev_id.clear();
+        agent->connected_dev_ip.clear();
+        agent->connected_username.clear();
+        agent->connected_password.clear();
+        agent->connected_port = 0;
+        agent->connected_use_ssl = false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(agent->cert_mutex);
+        agent->ftps_pin_host.clear();
+        agent->ftps_pin_port = 0;
+        agent->ftps_spki_pin.clear();
+        agent->ftps_ca_cert_path.clear();
+    }
 }
 }
 
