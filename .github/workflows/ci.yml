@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  syntax:
+    name: Syntax checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check shell script syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r script; do
+            bash -n "$script"
+          done < <(find . -type f -name '*.sh' -not -path './.git/*' | sort)
+
+      - name: Check Python helper syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile seed-lan-config.py

@@ -4,6 +4,13 @@ All notable release changes for this project are documented here.
 
 ## Unreleased
 
+No unreleased changes yet.
+
+## v0.1.2-arm64-lan - 2026-07-08
+
+Source-only ARM64 LAN support release focused on guided installation,
+validation, diagnostics, and safer restore/install operations.
+
 ### Added
 
 - Release testing checklist for outside ARM64 LAN validation.
@@ -13,6 +20,15 @@ All notable release changes for this project are documented here.
 - Guided installer backup listing and restore support.
 - Guided installer doctor mode and optional diagnostics collection.
 - Guided installer running-Studio detection before install or restore.
+- GitHub Actions syntax checks for shell scripts and Python helpers.
+
+### Validation
+
+- Ran the guided installer end to end on the maintainer ARM64 system.
+- Verified a fresh clone can build, verify exports, run doctor mode, and run
+  the documented dry installer path.
+- Confirmed installer restore refuses to continue while Bambu Studio appears to
+  be running.
 
 ## v0.1.1-arm64-lan - 2026-07-08
 

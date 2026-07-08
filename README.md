@@ -12,7 +12,7 @@ intentionally unsupported.
 
 ![Fedora Asahi ARM64 system running Bambu Studio with LAN liveview playing](docs/assets/arm64-liveview-working.png)
 
-Build:
+Build manually:
 
 ```sh
 ./build.sh
@@ -47,7 +47,14 @@ Quick start:
    ./build.sh
    ```
 
-4. Install the rebuilt plugins into Bambu Studio's user Flatpak config:
+4. Install the rebuilt plugins into Bambu Studio's user Flatpak config. The
+   recommended path is the guided installer:
+
+   ```sh
+   ./guided-install.sh
+   ```
+
+   For a lower-level manual install after `./build.sh`, use:
 
    ```sh
    ./install-flatpak-user.sh
@@ -55,7 +62,13 @@ Quick start:
 
 5. Seed or restore the LAN printer entry if Studio does not discover it
    automatically. Use the printer device id, printer LAN IP, and LAN access
-   code:
+   code. The guided installer can prompt for this with `--seed-lan`:
+
+   ```sh
+   ./guided-install.sh --seed-lan
+   ```
+
+   The direct helper is also available:
 
    ```sh
    ./seed-lan-config.py SERIAL_OR_DEVICE_ID 192.0.2.50 ACCESS_CODE
