@@ -9,6 +9,7 @@ All notable release changes for this project are documented here.
 - Release testing checklist for outside ARM64 LAN validation.
 - Redacted local diagnostics collection helper for bug reports.
 - Guided install script and implementation plan.
+- Non-interactive LAN seeding options for the guided installer.
 
 ## v0.1.1-arm64-lan - 2026-07-08
 

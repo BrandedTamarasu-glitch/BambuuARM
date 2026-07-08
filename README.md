@@ -81,6 +81,18 @@ The guided installer checks prerequisites, runs the build and export verifier,
 shows BuildIDs, asks before installing into the user Flatpak config, and can
 optionally seed LAN printer config with `--seed-lan`.
 
+For non-interactive LAN seeding:
+
+```sh
+./guided-install.sh --yes --seed-lan \
+  --seed-dev-id SERIAL_OR_DEVICE_ID \
+  --seed-dev-ip 192.0.2.50 \
+  --access-code ACCESS_CODE \
+  --discovery-seed
+```
+
+For normal use, omit `--access-code` and enter it at the hidden prompt.
+
 Install into the user Flatpak config:
 
 ```sh

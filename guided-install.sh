@@ -7,6 +7,11 @@ assume_yes=0
 do_build=1
 do_install=1
 do_seed=0
+seed_discovery=0
+seed_dev_id=""
+seed_dev_ip=""
+seed_access_code=""
+seed_dev_name=""
 
 usage() {
   cat <<'EOF'
@@ -18,6 +23,11 @@ Options:
   --no-build         Skip ./build.sh and use existing build/ outputs.
   --no-install       Stop after build and export verification.
   --seed-lan         After install, offer to seed LAN printer config.
+  --seed-dev-id ID   Device id or serial for --seed-lan.
+  --seed-dev-ip IP   Printer LAN IPv4 address for --seed-lan.
+  --access-code CODE LAN access code for --seed-lan. Prefer interactive entry.
+  --discovery-seed   Also write arm64_discovery_devices.jsonl.
+  --dev-name NAME    Printer name for --discovery-seed.
   -h, --help         Show this help.
 
 This script builds and installs source-local ARM64 plugin shims into the current
@@ -45,6 +55,19 @@ confirm() {
 
 need_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+valid_ipv4() {
+  local ip="$1"
+  local IFS=.
+  local -a parts
+  read -r -a parts <<< "$ip"
+  [[ "${#parts[@]}" -eq 4 ]] || return 1
+  local part
+  for part in "${parts[@]}"; do
+    [[ "$part" =~ ^[0-9]+$ ]] || return 1
+    (( part >= 0 && part <= 255 )) || return 1
+  done
 }
 
 show_build_id() {
@@ -80,6 +103,34 @@ while [[ $# -gt 0 ]]; do
     --seed-lan)
       do_seed=1
       shift
+      ;;
+    --seed-dev-id)
+      [[ $# -ge 2 ]] || die "--seed-dev-id requires a value"
+      seed_dev_id="$2"
+      do_seed=1
+      shift 2
+      ;;
+    --seed-dev-ip)
+      [[ $# -ge 2 ]] || die "--seed-dev-ip requires a value"
+      seed_dev_ip="$2"
+      do_seed=1
+      shift 2
+      ;;
+    --access-code)
+      [[ $# -ge 2 ]] || die "--access-code requires a value"
+      seed_access_code="$2"
+      do_seed=1
+      shift 2
+      ;;
+    --discovery-seed)
+      seed_discovery=1
+      do_seed=1
+      shift
+      ;;
+    --dev-name)
+      [[ $# -ge 2 ]] || die "--dev-name requires a value"
+      seed_dev_name="$2"
+      shift 2
       ;;
     -h|--help)
       usage
@@ -121,6 +172,10 @@ if [[ -n "$(git -C "$project_dir" status --short)" ]]; then
   echo "warning: working tree has local changes; this installer will build the current checkout."
   git -C "$project_dir" status --short
   echo
+fi
+
+if [[ "$do_seed" == "1" && ! -t 0 && ( -z "$seed_dev_id" || -z "$seed_dev_ip" || -z "$seed_access_code" ) ]]; then
+  die "--seed-lan in a non-interactive shell requires --seed-dev-id, --seed-dev-ip, and --access-code"
 fi
 
 if [[ "$do_build" == "1" ]]; then
@@ -177,14 +232,29 @@ show_build_id "$plugin_dir/libBambuSource.so"
 if [[ "$do_seed" == "1" ]]; then
   echo
   if confirm "Seed LAN printer config now? This will prompt for local printer details."; then
-    read -r -p "Printer device id or serial: " dev_id
-    read -r -p "Printer LAN IP: " dev_ip
-    read -r -s -p "Printer LAN access code: " access_code
+    dev_id="$seed_dev_id"
+    dev_ip="$seed_dev_ip"
+    access_code="$seed_access_code"
+    if [[ -z "$dev_id" ]]; then
+      read -r -p "Printer device id or serial: " dev_id
+    fi
+    if [[ -z "$dev_ip" ]]; then
+      read -r -p "Printer LAN IPv4 address: " dev_ip
+    fi
+    if [[ -z "$access_code" ]]; then
+      read -r -s -p "Printer LAN access code: " access_code
+      echo
+    fi
     echo
     [[ -n "$dev_id" && -n "$dev_ip" && -n "$access_code" ]] || die "device id, IP, and access code are required"
-    "$project_dir/seed-lan-config.py" "$dev_id" "$dev_ip" "$access_code"
-    if confirm "Also write a manual discovery seed?"; then
-      BAMBU_DEV_ID="$dev_id" BAMBU_DEV_IP="$dev_ip" "$project_dir/seed-discovered-a1-lan.sh"
+    valid_ipv4 "$dev_ip" || die "invalid IPv4 address: $dev_ip"
+    BAMBU_DEV_ID="$dev_id" BAMBU_DEV_IP="$dev_ip" BAMBU_ACCESS_CODE="$access_code" "$project_dir/seed-lan-config.py"
+    if [[ "$seed_discovery" == "1" ]] || confirm "Also write a manual discovery seed?"; then
+      if [[ -n "$seed_dev_name" ]]; then
+        BAMBU_DEV_NAME="$seed_dev_name" BAMBU_DEV_ID="$dev_id" BAMBU_DEV_IP="$dev_ip" "$project_dir/seed-discovered-a1-lan.sh"
+      else
+        BAMBU_DEV_ID="$dev_id" BAMBU_DEV_IP="$dev_ip" "$project_dir/seed-discovered-a1-lan.sh"
+      fi
     fi
   fi
 fi

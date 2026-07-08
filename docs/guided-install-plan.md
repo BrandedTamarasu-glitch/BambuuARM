@@ -31,6 +31,7 @@ Supported options:
 ./guided-install.sh --no-install
 ./guided-install.sh --no-build
 ./guided-install.sh --yes
+./guided-install.sh --yes --seed-lan --seed-dev-id SERIAL_OR_DEVICE_ID --seed-dev-ip 192.0.2.50 --discovery-seed
 ```
 
 ## Phase 1: Preflight
@@ -69,6 +70,9 @@ Supported options:
 - Optionally run `seed-discovered-a1-lan.sh`. Implemented.
 - Never echo or store the access code outside Bambu Studio's expected local
   config file.
+- Non-interactive seed flags are implemented for device id, LAN IP, discovery
+  seed, and optional access code. Interactive access-code entry is preferred so
+  the code is not passed on the command line.
 
 ## Phase 5: Smoke And Report
 
