@@ -21,6 +21,7 @@ Do not post LAN access codes, raw config files, or unredacted logs.
 From a fresh checkout of the release tag:
 
 ```sh
+./guided-install.sh --doctor
 ./build.sh
 ./verify-exports.sh
 ./install-flatpak-user.sh
@@ -32,6 +33,8 @@ Expected result:
 - `build/libBambuSource.so` is an ARM64 shared object.
 - `./verify-exports.sh` reports all required symbols are exported.
 - The install script prints the installed plugin file types.
+- `./guided-install.sh --doctor` reports no blocking problems, or reports the
+  missing prerequisite to fix before testing.
 
 ## Startup And Discovery
 

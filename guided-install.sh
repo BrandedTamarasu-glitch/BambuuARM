@@ -15,6 +15,7 @@ seed_dev_name=""
 mode="install"
 restore_stamp=""
 verbose_backups=0
+run_diagnostics=0
 
 usage() {
   cat <<'EOF'
@@ -33,6 +34,8 @@ Options:
   --dev-name NAME    Printer name for --discovery-seed.
   --list-backups     List restorable plugin backup pairs and exit.
   --restore[=STAMP]  Restore a plugin backup pair. Defaults to newest pair.
+  --doctor           Report environment, plugin, build, and backup status.
+  --diagnostics      Run collect-diagnostics.sh after install or restore.
   --verbose          Show file details with --list-backups.
   -h, --help         Show this help.
 
@@ -63,6 +66,10 @@ need_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+have_command() {
+  command -v "$1" >/dev/null 2>&1
+}
+
 valid_ipv4() {
   local ip="$1"
   local IFS=.
@@ -84,6 +91,26 @@ show_build_id() {
     if [[ -n "$build_id" ]]; then
       echo "$path: $build_id"
     fi
+  fi
+}
+
+print_file_summary() {
+  local path="$1"
+  if [[ -e "$path" ]]; then
+    file "$path"
+    show_build_id "$path"
+  else
+    echo "$path: missing"
+  fi
+}
+
+maybe_run_diagnostics() {
+  if [[ "$run_diagnostics" == "1" ]]; then
+    "$project_dir/collect-diagnostics.sh"
+    return
+  fi
+  if [[ -t 0 ]] && confirm "Collect a redacted diagnostics bundle now?"; then
+    "$project_dir/collect-diagnostics.sh"
   fi
 }
 
@@ -162,6 +189,95 @@ restore_backup() {
   show_build_id "$plugin_dir/libBambuSource.so"
   echo
   echo "Previous active files were preserved as *.pre-restore-$rollback_stamp"
+  maybe_run_diagnostics
+}
+
+doctor() {
+  local failures=0
+  echo "Doctor report"
+  echo
+  echo "Architecture: $(uname -m)"
+  case "$(uname -m)" in
+    aarch64|arm64) echo "  ok: ARM64 host" ;;
+    *) echo "  problem: this project targets ARM64 Linux"; failures=$((failures + 1)) ;;
+  esac
+
+  echo
+  if have_command flatpak; then
+    echo "flatpak: $(command -v flatpak)"
+    if flatpak info com.bambulab.BambuStudio >/dev/null 2>&1; then
+      echo "  ok: Bambu Studio Flatpak is installed"
+      flatpak info com.bambulab.BambuStudio | sed -n '1,8p' | sed 's/^/  /'
+    else
+      echo "  problem: Bambu Studio Flatpak was not found"
+      failures=$((failures + 1))
+    fi
+  else
+    echo "flatpak: missing"
+    failures=$((failures + 1))
+  fi
+
+  echo
+  if [[ -d "$config_dir" ]]; then
+    echo "Config directory: $config_dir"
+  else
+    echo "Config directory missing: $config_dir"
+    failures=$((failures + 1))
+  fi
+  echo "Plugin directory: $plugin_dir"
+
+  echo
+  echo "Bambu Studio source checkout:"
+  if [[ -f "$source_dir/src/slic3r/Utils/NetworkAgent.cpp" ]]; then
+    echo "  ok: $source_dir"
+  else
+    echo "  missing or incomplete: $source_dir"
+    echo "  next: pass --source-dir PATH or set BAMBU_STUDIO_SOURCE_DIR"
+  fi
+
+  echo
+  echo "Current installed plugins:"
+  print_file_summary "$plugin_dir/libbambu_networking.so"
+  print_file_summary "$plugin_dir/libBambuSource.so"
+
+  echo
+  echo "Current build outputs:"
+  print_file_summary "$project_dir/build/libbambu_networking.so"
+  print_file_summary "$project_dir/build/libBambuSource.so"
+
+  echo
+  echo "Export verification:"
+  if [[ -f "$source_dir/src/slic3r/Utils/NetworkAgent.cpp" &&
+        -f "$project_dir/build/libbambu_networking.so" &&
+        -f "$project_dir/build/libBambuSource.so" ]]; then
+    if BAMBU_STUDIO_SOURCE_DIR="$source_dir" "$project_dir/verify-exports.sh"; then
+      echo "  ok"
+    else
+      echo "  problem: export verification failed"
+      failures=$((failures + 1))
+    fi
+  else
+    echo "  skipped: source checkout or build outputs are missing"
+  fi
+
+  echo
+  local newest
+  newest="$(newest_backup_stamp)"
+  if [[ -n "$newest" ]]; then
+    echo "Latest complete backup pair: $newest"
+  else
+    echo "Latest complete backup pair: none"
+  fi
+
+  echo
+  if [[ "$failures" -eq 0 ]]; then
+    echo "Doctor result: no blocking problems found."
+    echo "Next: ./guided-install.sh"
+  else
+    echo "Doctor result: found $failures blocking problem(s)."
+    echo "Fix the reported items, then rerun ./guided-install.sh --doctor."
+  fi
+  return "$failures"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -228,6 +344,14 @@ while [[ $# -gt 0 ]]; do
       restore_stamp="${1#--restore=}"
       shift
       ;;
+    --doctor)
+      mode="doctor"
+      shift
+      ;;
+    --diagnostics)
+      run_diagnostics=1
+      shift
+      ;;
     --verbose)
       verbose_backups=1
       shift
@@ -273,6 +397,11 @@ fi
 if [[ "$mode" == "restore" ]]; then
   restore_backup "$restore_stamp"
   exit 0
+fi
+
+if [[ "$mode" == "doctor" ]]; then
+  doctor
+  exit $?
 fi
 
 echo "Bambu Studio source: $source_dir"
@@ -371,6 +500,8 @@ if [[ "$do_seed" == "1" ]]; then
     fi
   fi
 fi
+
+maybe_run_diagnostics
 
 cat <<EOF
 

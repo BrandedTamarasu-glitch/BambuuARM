@@ -104,6 +104,18 @@ List and restore installer backups:
 Restore mode copies the selected backup pair back to the active plugin files
 and preserves the current active files as `*.pre-restore-<timestamp>`.
 
+Run a non-mutating environment check:
+
+```sh
+./guided-install.sh --doctor
+```
+
+Collect diagnostics immediately after an install or restore:
+
+```sh
+./guided-install.sh --diagnostics
+```
+
 Install into the user Flatpak config:
 
 ```sh

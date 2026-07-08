@@ -11,6 +11,7 @@ All notable release changes for this project are documented here.
 - Guided install script and implementation plan.
 - Non-interactive LAN seeding options for the guided installer.
 - Guided installer backup listing and restore support.
+- Guided installer doctor mode and optional diagnostics collection.
 
 ## v0.1.1-arm64-lan - 2026-07-08
 

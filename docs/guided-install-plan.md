@@ -34,6 +34,8 @@ Supported options:
 ./guided-install.sh --yes --seed-lan --seed-dev-id SERIAL_OR_DEVICE_ID --seed-dev-ip 192.0.2.50 --discovery-seed
 ./guided-install.sh --list-backups
 ./guided-install.sh --restore
+./guided-install.sh --doctor
+./guided-install.sh --diagnostics
 ```
 
 ## Phase 1: Preflight
@@ -79,11 +81,12 @@ Supported options:
 ## Phase 5: Smoke And Report
 
 - Prompt the user to restart Bambu Studio. Implemented.
-- Offer to run `./collect-diagnostics.sh` after first startup. Not yet
-  implemented as a prompt; the script prints the command.
+- Offer to run `./collect-diagnostics.sh` after install or restore. Implemented
+  interactively and with `--diagnostics`.
 - Print the testing checklist path: `docs/testing.md`. Implemented.
 - Print troubleshooting pointers for logs and TLS pin reset. Partially
   implemented through README/testing links.
+- Non-mutating doctor report is implemented with `--doctor`.
 
 ## Safety Checks
 
