@@ -1,104 +1,88 @@
-# ARM64 Bambu Network Plugin Stub
+# ARM64 Bambu Studio LAN Plugin Shim
 
-This is an experimental ARM64 replacement for Bambu Studio's
-`libbambu_networking.so` on ARM64 Linux.
+This project is an experimental ARM64 replacement for Bambu Studio's local
+networking and media plugins on ARM64 Linux.
 
-It exports the symbols that Bambu Studio 2.7.1.62 resolves at startup and
-implements enough local/LAN behavior for an A1 in LAN mode to be discovered,
-restored from config, connected over TLS MQTT, monitored through printer status
-reports, uploaded over FTPS, started with a local `project_file` print command,
-and viewed through local LAN liveview. Cloud account and binding flows are still
-intentionally unsupported.
+It targets Bambu Studio 2.7.1.62 and implements the local/LAN paths needed for
+a LAN-mode Bambu Lab A1 to be discovered or restored from config, connected over
+TLS MQTT, monitored through printer status reports, uploaded over FTPS,
+started with a local `project_file` print command, and viewed through local LAN
+liveview.
+
+Cloud account features remain intentionally unsupported.
 
 ![Fedora Asahi ARM64 system running Bambu Studio with LAN liveview playing](docs/assets/arm64-liveview-working.png)
 
-Build manually:
+## Current Scope
 
-```sh
-./build.sh
-```
+Working local paths:
 
-By default, `build.sh` expects a Bambu Studio source checkout at
-`$HOME/Downloads/BambuStudio-source`. To use a different checkout:
+- LAN discovery and configured-printer restore.
+- TLS MQTT status monitoring on port `8883`.
+- FTPS file upload on port `990`.
+- Local `project_file` print start using the uploaded 3MF.
+- LAN liveview through the local port-`6000` TLS/MJPEG tunnel.
+- Sleep/resume-oriented MQTT reconnect handling with direct `pushall` status
+  refreshes when the selected printer is already connected.
+- First-use TLS certificate/public-key pinning for local printer services.
+- Redacted runtime diagnostics, with verbose hot-path logging available by
+  launching Studio with `BAMBU_ARM_VERBOSE_LOG=1`.
 
-```sh
-BAMBU_STUDIO_SOURCE_DIR=/path/to/BambuStudio-source ./build.sh
-```
+Unsupported paths:
 
-`./build.sh` produces:
+- Bambu cloud login, cloud binding, and account-backed remote access.
+- Agora/cloud video.
+- Direct RTSP unless a printer advertises a usable `ipcam.rtsp_url`.
 
-```text
-build/libbambu_networking.so
-build/libBambuSource.so
-build/smoke-upload
-build/smoke-bambu-source
-build/probe-local-tunnel
-```
+## Requirements
 
-Quick start:
+- ARM64 Linux.
+- Bambu Studio installed as a Flatpak and launched once so its user config
+  directory exists.
+- A Bambu Studio source checkout. By default scripts look for:
 
-1. Install Bambu Studio as a Flatpak and launch it once so its user config
-   directory exists.
-2. Put the printer in LAN mode and make sure this ARM device can reach the
-   printer on the same network.
-3. Build the ARM64 plugin binaries:
+  ```text
+  ~/Downloads/BambuStudio-source
+  ```
 
-   ```sh
-   ./build.sh
-   ```
+  To use another checkout, pass `--source-dir` to the guided installer or set
+  `BAMBU_STUDIO_SOURCE_DIR`.
+- A LAN-mode printer reachable from the ARM64 device on the same network.
 
-4. Install the rebuilt plugins into Bambu Studio's user Flatpak config. The
-   recommended path is the guided installer:
+This release is source-only. Build locally on the ARM64 machine where Bambu
+Studio will run.
+
+## Quick Start
+
+1. Close Bambu Studio.
+2. Run the guided installer:
 
    ```sh
    ./guided-install.sh
    ```
 
-   For a lower-level manual install after `./build.sh`, use:
+3. Restart Bambu Studio.
+4. Select the LAN printer and verify status, upload, print start, and liveview.
 
-   ```sh
-   ./install-flatpak-user.sh
-   ```
+The guided installer checks prerequisites, builds the ARM64 shims, verifies the
+exported ABI symbols, shows Build IDs, backs up existing plugin files, asks
+before installing into the user Flatpak config, and can optionally seed LAN
+printer config.
 
-5. Seed or restore the LAN printer entry if Studio does not discover it
-   automatically. Use the printer device id, printer LAN IP, and LAN access
-   code. The guided installer can prompt for this with `--seed-lan`:
-
-   ```sh
-   ./guided-install.sh --seed-lan
-   ```
-
-   The direct helper is also available:
-
-   ```sh
-   ./seed-lan-config.py SERIAL_OR_DEVICE_ID 192.0.2.50 ACCESS_CODE
-   ```
-
-   If discovery also needs a manual seed, write one with the same id and IP:
-
-   ```sh
-   BAMBU_DEV_ID=SERIAL_OR_DEVICE_ID BAMBU_DEV_IP=192.0.2.50 ./seed-discovered-a1-lan.sh
-   ```
-
-6. Restart Bambu Studio. The printer should appear as a LAN printer. Local
-   status, FTPS upload, local print start, and LAN liveview are the intended
-   working paths.
-
-Guided install wrapper:
+Run a non-mutating environment check at any time:
 
 ```sh
-./guided-install.sh
+./guided-install.sh --doctor
 ```
 
-The guided installer checks prerequisites, runs the build and export verifier,
-shows BuildIDs, asks before installing into the user Flatpak config, and can
-optionally seed LAN printer config with `--seed-lan`.
+If Studio does not discover the printer automatically, use the guided LAN seed
+flow:
 
-Close Bambu Studio before install or restore. The guided installer refuses to
-replace active plugin files while Studio appears to be running unless `--force`
-is provided.
+```sh
+./guided-install.sh --seed-lan
+```
 
-For non-interactive LAN seeding:
+For unattended setup:
 
 ```sh
 ./guided-install.sh --yes --seed-lan \
@@ -108,72 +92,63 @@ For non-interactive LAN seeding:
   --discovery-seed
 ```
 
-For normal use, omit `--access-code` and enter it at the hidden prompt.
+For normal interactive use, omit `--access-code` and enter it at the hidden
+prompt.
 
-List and restore installer backups:
+## Installer Safety And Recovery
+
+Close Bambu Studio before install or restore. The guided installer refuses to
+replace active plugin files while Studio appears to be running unless `--force`
+is provided.
+
+List restorable backup pairs:
 
 ```sh
 ./guided-install.sh --list-backups
+```
+
+Restore the newest complete backup pair:
+
+```sh
 ./guided-install.sh --restore
+```
+
+Restore a specific backup pair:
+
+```sh
 ./guided-install.sh --restore=YYYYMMDD-HHMMSS
 ```
 
-Restore mode copies the selected backup pair back to the active plugin files
-and preserves the current active files as `*.pre-restore-<timestamp>`.
+Restore mode copies the selected backup pair back to the active plugin files and
+preserves the current active files as `*.pre-restore-<timestamp>`.
 
-Run a non-mutating environment check:
+## Diagnostics
 
-```sh
-./guided-install.sh --doctor
-```
-
-Collect diagnostics immediately after an install or restore:
-
-```sh
-./guided-install.sh --diagnostics
-```
-
-Install into the user Flatpak config:
-
-```sh
-./install-flatpak-user.sh
-```
-
-Verify the exported ABI symbols:
-
-```sh
-./verify-exports.sh
-```
-
-Verify the media shim load behavior:
-
-```sh
-./build/smoke-bambu-source ./build/libBambuSource.so
-```
-
-Release testing checklist:
-
-```text
-docs/testing.md
-```
-
-Collect a local, redacted diagnostic bundle for bug reports:
+Collect a local, redacted diagnostic bundle:
 
 ```sh
 ./collect-diagnostics.sh
 ```
 
-Review the generated bundle before sharing it publicly.
+Or collect diagnostics immediately after an install or restore:
 
-Runtime diagnostics are written to:
+```sh
+./guided-install.sh --diagnostics
+```
+
+Review generated diagnostics before sharing them publicly.
+
+Runtime logs are written to:
 
 ```text
 ~/.var/app/com.bambulab.BambuStudio/config/BambuStudio/arm64_network_stub.log
 ~/.var/app/com.bambulab.BambuStudio/config/BambuStudio/arm64_bambu_source.log
 ```
 
-LAN TLS peers are authenticated with first-use certificate/public-key pins
-stored in:
+Runtime logs are diagnostic only and intentionally avoid raw access codes, raw
+MQTT payloads, and raw discovery payloads.
+
+LAN TLS pins are stored in:
 
 ```text
 ~/.var/app/com.bambulab.BambuStudio/config/BambuStudio/arm64_trusted_tls_pins.txt
@@ -182,66 +157,78 @@ stored in:
 If a printer mainboard or certificate changes, remove the matching pin entry and
 reconnect on a trusted LAN.
 
-Supported local behavior:
+## Validation
 
-- LAN discovery and configured-printer restore.
-- TLS MQTT status monitoring on port `8883`.
-- FTPS file upload on port `990`.
-- Local `project_file` print start using the uploaded 3MF.
-- LAN liveview through the local port-`6000` tunnel. The implemented stream path
-  matches the x86 plugin's combined `0x3000` TLS write and advertises the
-  printer's MJPEG frames to Studio.
-- Sleep/resume-oriented MQTT reconnect handling with direct `pushall` status
-  refreshes when the selected printer is already connected.
-- Lower default diagnostic overhead, with verbose hot-path logs available by
-  launching Studio with `BAMBU_ARM_VERBOSE_LOG=1`.
+Release validation checklist:
 
-Unsupported behavior:
+```text
+docs/testing.md
+```
 
-- Bambu cloud login, cloud binding, and account-backed remote access.
-- Agora/cloud video.
-- Direct RTSP unless a printer advertises a usable `ipcam.rtsp_url`.
+The `v0.1.2-arm64-lan` release was validated by:
 
-Known limitations:
+- Running the guided installer end to end on the maintainer ARM64 system.
+- Verifying a fresh clone can build, verify exports, run doctor mode, and run
+  the documented dry installer path.
+- Confirming restore refuses to continue while Bambu Studio appears to be
+  running.
+- Passing the GitHub Actions syntax workflow.
 
-- Tested with a Bambu Lab A1 in LAN mode on ARM64 Linux.
-- First connection to each LAN TLS service must happen on a trusted LAN because
-  the plugin stores a first-use certificate/public-key pin.
-- If the printer certificate changes, connections will fail until the matching
-  entry is removed from `arm64_trusted_tls_pins.txt`.
-- The `build/smoke-upload`, `build/probe-local-tunnel`, and
-  `build/official-live-probe` binaries are developer diagnostics. They are not
-  intended as end-user release artifacts.
-- Runtime logs are diagnostic only and intentionally avoid raw access codes,
-  raw MQTT payloads, and raw discovery payloads.
+## Manual And Developer Commands
 
-License:
+Build manually:
 
-This project is released under the MIT License. See [LICENSE](LICENSE).
+```sh
+./build.sh
+```
 
-Release and security notes:
+Use a non-default Bambu Studio source checkout:
 
-- See [CHANGELOG.md](CHANGELOG.md) for tagged release history.
-- See [SECURITY.md](SECURITY.md) for supported versions, vulnerability
-  reporting, and local TLS pinning guidance.
-- See [docs/testing.md](docs/testing.md) for the release validation checklist.
-- See [docs/guided-install-plan.md](docs/guided-install-plan.md) for the
-  planned guided installer workflow.
+```sh
+BAMBU_STUDIO_SOURCE_DIR=/path/to/BambuStudio-source ./build.sh
+```
 
-Troubleshooting:
+Manual build outputs:
 
-- If Studio does not load the plugin, run `./verify-exports.sh` and check the
-  two `arm64_*` log files listed above.
-- If liveview opens but stays blank, inspect `arm64_bambu_source.log` for
-  `prefetch_stream_info_sample codec=mjpeg size=...`.
-- If a connection fails after a printer certificate change, remove the matching
-  entry from `arm64_trusted_tls_pins.txt` while on a trusted LAN.
-- If upload or local print fails, inspect `arm64_network_stub.log` for the FTPS
-  path and MQTT command result.
-- Re-run `./install-flatpak-user.sh` after every rebuild; Bambu Studio loads the
-  installed copies from its Flatpak config directory.
+```text
+build/libbambu_networking.so
+build/libBambuSource.so
+build/smoke-upload
+build/smoke-bambu-source
+build/probe-local-tunnel
+```
 
-Optional manual LAN discovery seed file:
+Install manually into the user Flatpak config after a build:
+
+```sh
+./install-flatpak-user.sh
+```
+
+Verify exported ABI symbols:
+
+```sh
+./verify-exports.sh
+```
+
+Verify media shim load behavior:
+
+```sh
+./build/smoke-bambu-source ./build/libBambuSource.so
+```
+
+Direct LAN config seed helper:
+
+```sh
+./seed-lan-config.py SERIAL_OR_DEVICE_ID 192.0.2.50 ACCESS_CODE
+```
+
+Optional manual discovery seed helper:
+
+```sh
+BAMBU_DEV_ID=SERIAL_OR_DEVICE_ID BAMBU_DEV_IP=192.0.2.50 ./seed-discovered-a1-lan.sh
+```
+
+The discovery seed file is:
 
 ```text
 ~/.var/app/com.bambulab.BambuStudio/config/BambuStudio/arm64_discovery_devices.jsonl
@@ -253,151 +240,39 @@ Each non-comment line must be one full discovery JSON object:
 {"dev_name":"Bambu Lab A1","dev_id":"SERIAL_OR_DEVICE_ID","dev_ip":"192.0.2.50","dev_type":"N2S","dev_signal":"-50","connect_type":"lan","bind_state":"free","sec_link":"secure"}
 ```
 
-For the printer discovered during Phase 2, this helper writes a LAN-mode seed:
+The `build/smoke-upload`, `build/probe-local-tunnel`, and
+`build/official-live-probe` binaries are developer diagnostics. They are not
+end-user release artifacts.
 
-```sh
-BAMBU_DEV_ID=SERIAL_OR_DEVICE_ID BAMBU_DEV_IP=192.0.2.50 ./seed-discovered-a1-lan.sh
-```
+## Troubleshooting
 
-This helper writes Bambu Studio's saved LAN access state, including the encoded
-`user_access_dev_ip` value required by Studio's local-printer restore path:
+- If Studio does not load the plugin, run `./guided-install.sh --doctor`, then
+  `./verify-exports.sh`.
+- If liveview opens but stays blank, inspect `arm64_bambu_source.log` for
+  `prefetch_stream_info_sample codec=mjpeg size=...`.
+- If a connection fails after a printer certificate change, remove the matching
+  entry from `arm64_trusted_tls_pins.txt` while on a trusted LAN.
+- If upload or local print fails, inspect `arm64_network_stub.log` for the FTPS
+  path and MQTT command result.
+- Re-run `./guided-install.sh` after rebuilding; Bambu Studio loads the
+  installed plugin copies from its Flatpak config directory.
 
-```sh
-./seed-lan-config.py SERIAL_OR_DEVICE_ID 192.0.2.50 ACCESS_CODE
-```
+## License, Releases, And Security
 
-Current verified state:
+This project is released under the MIT License. See [LICENSE](LICENSE).
 
-- Bambu Studio loads the ARM64 plugin and sees the A1 over SSDP.
-- `bind_detect` restores the configured device id from the seed file before
-  discovery has fully started.
-- TLS MQTT to the configured printer IP on port `8883` authenticates with
-  `connack rc=0`.
-- The plugin subscribes to `device/<device-id>/report` and receives SUBACK.
-- Studio publishes `pushall` and `get_version`; the printer replies with version
-  and live `push_status` JSON.
-- `bambu_network_install_device_cert` emits `device_cert_installed` once per
-  device so Studio's security-ready state is satisfied without log spam.
-- The A1 exposes FTPS on port `990` and the newer transfer service on port
-  `6000`; plain FTP port `21` is closed.
-- `bambu_network_start_send_gcode_to_sdcard` now uploads the requested local file
-  over FTPS using libcurl. The A1 profile's `sdcard/` folder is mapped to
-  `cache/`, which is the writable FTPS directory seen on this printer.
-- `build/smoke-upload` loads the plugin with `dlopen` and verifies the real
-  `bambu_network_start_send_gcode_to_sdcard` export against a caller-supplied
-  local file.
-- `bambu_network_start_local_print_with_record` and
-  `bambu_network_start_local_print` now upload the file over FTPS and publish a
-  `project_file` MQTT command pointing at `file:///sdcard/cache/<file>`.
-- The first live local-print test initially failed because the payload pointed
-  at `Metadata/plate_2.gcode` while the uploaded 3MF contained
-  `Metadata/plate_1.gcode`. The plugin now scans the 3MF and uses the embedded
-  gcode path, with a fallback for Studio temp exports whose internal path uses
-  a hidden `Metadata/.<temp>.gcode` name.
-- Local print start has been validated with one successful full print and a
-  second clean print start after the readable remote filename and gcode-param
-  fixes. The printer acknowledged `project_file` with `result:"success"` and
-  reported `gcode_state:"PREPARE"` followed by `gcode_state:"RUNNING"`.
-- The ARM networking shim detects stale MQTT sockets after system sleep by
-  sending shorter-interval MQTT pings, treats ping/publish failures as reconnect
-  triggers, retries LAN MQTT reconnects with backoff, and sends `pushall` after
-  reconnect so Studio refreshes printer state without needing a full restart.
-- MQTT connect/reconnect workers are now owned and serialized by the agent, so
-  reconnect lifecycle work is not left in detached background threads.
-- `bambu_network_refresh_connection` now sends an immediate `pushall` status
-  refresh when MQTT is already connected instead of forcing a reconnect. A
-  reconnect is scheduled only when the active session is unusable.
-- The local print path sends a status refresh after a successful `project_file`
-  publish so Studio sees the printer transition sooner.
-- Default logs suppress high-frequency login polling, discovery probe/candidate,
-  MQTT receive/ping acknowledgement, and liveview sample-read messages. Set
-  `BAMBU_ARM_VERBOSE_LOG=1` when those diagnostics are needed.
-- The 3MF G-code parameter lookup now uses a single streaming scan instead of
-  repeated full-file reads, while preserving plate path and Studio temp-export
-  fallbacks.
-- FTPS TLS pin preflight results are cached per selected-printer endpoint during
-  a session, so repeated uploads do not redo the same preflight unless the
-  connected endpoint changes.
-- `libBambuSource.so` now exports the complete `Bambu_*` media ABI expected by
-  Studio on ARM64. It creates/destroys tunnels, opens local port-6000 TLS
-  liveview, advertises the printer's MJPEG stream, implements both
-  `Bambu_StartStream(true)` and `Bambu_StartStreamEx(0x3000)`, and logs a
-  controlled unsupported status for non-local media instead of causing Studio's
-  media code to report a plugin-library/DLL load failure.
-- The A1 status payload advertises an `ipcam` object with
-  `ipcam_dev:"1"`, `resolution:"1080p"`, `tutk_server:"disable"`, and
-  `mode_bits:3`, but it does not currently include `ipcam.liveview` or
-  `ipcam.rtsp_url`. Bambu Studio's LAN video path therefore depends on the
-  `bambu:///local/<ip>.?port=6000&user=bblp&passwd=<access>` local tunnel.
-- `build/probe-local-tunnel` implements the currently reverse-engineered port
-  6000 TLS frame protocol. It matches the x86 plugin's observed credential
-  slots, random initial sequence, cipher list, and optional no-SNI behavior.
-  The printer negotiates `TLSv1.2` with `ECDHE-RSA-AES256-GCM-SHA384`.
-- The live-video path has now been matched more closely to the x86 control
-  flow: Studio calls `Bambu_Open`, then `Bambu_StartStream(true)`, then
-  `Bambu_GetStreamInfo`, then `Bambu_ReadSample`.
-- The x86 plugin was inspected on a working Bambu Studio session. Its
-  `BambuTunnelLocal::start(0x3000)` copies `user` into the first 32-byte slot
-  and `passwd` into the second 32-byte slot before sending the 64-byte live
-  control frame. A follow-up disassembly pass corrected an earlier mistaken
-  `passwd`/`authkey` interpretation: the referenced string was `"user"`, not an
-  authkey field. The separate non-video 16-byte auth frame uses the same
-  `user`-then-`passwd` slot order.
-- A follow-up disassembly pass found the critical wire-level difference:
-  official `LocalTunnel_Write` sends the 16-byte `0x3000` header and 64-byte
-  control payload as one contiguous `SSL_write`. Earlier ARM probes and the ARM
-  shim sent header and payload as separate TLS writes; that negotiated TLS but
-  produced no media frames.
-- After changing `probe-local-tunnel` to send the combined 80-byte control
-  record, the standalone aarch64 Flatpak probe received a media frame
-  immediately. The payload starts with `ff d8 ff e0 ... AVI1`, so this printer's
-  local liveview stream is JPEG/MJPEG, not H.264.
-- `libBambuSource.so` now matches the combined `0x3000` write, prefetches the
-  first media frame during `Bambu_GetStreamInfo`, advertises `MJPG` /
-  `video_jpeg` when the first sample is JPEG, and raises `max_frame_size` from
-  the old provisional 48 KB value to 1 MB. A Studio liveview test on ARM
-  confirmed video playback after these changes.
-- `tools/official_live_probe.cpp` can load a `libBambuSource.so` and exercise
-  the local liveview ABI outside Studio. It is a developer diagnostic and reads
-  the LAN access code from `BAMBU_ACCESS_CODE` so secrets are not passed on the
-  command line.
-- Current ARM probing through the aarch64 Flatpak runtime requires
-  `--share=network`; without it, the local probe cannot connect even though the
-  host can reach the printer. With network sharing enabled, port 6000 negotiates
-  `TLSv1.2` / `ECDHE-RSA-AES256-GCM-SHA384`. Earlier empty/default-authkey
-  control-frame probes timed out, but those probes used the now-obsolete
-  `passwd`/`authkey` slot interpretation.
-- The ARM `libBambuSource.so` logs only redacted local URL and credential
-  metadata for liveview diagnostics.
-- A follow-up x86 disassembly pass confirmed `Bambu_StartStream(true)` maps to
-  `Bambu_StartStreamEx(0x3000)`. On successful local liveview start, the common
-  x86 wrapper can return `Bambu_would_block` while samples are pending. Returning
-  `Bambu_would_block` directly from the ARM shim's `start_local_live` caused
-  Studio to repeatedly call `Bambu_StartStream(true)` and never advance to
-  `Bambu_ReadSample`, so the ARM shim keeps returning `Bambu_success` from
-  stream start and records concrete SSL read failure details in the sample path.
-- The ARM networking shim normalizes full `push_status` payloads that
-  advertise `ipcam_dev:"1"` but omit `ipcam.liveview`/`ipcam.rtsp_url`, adding
-  `ipcam.liveview.local:"local"` and `remote:"none"` before handing the status
-  to Studio.
-- A 2026-07-07 ARM runtime smoke test confirmed liveview still returns MJPEG
-  frames after first-use TLS pinning was added.
-- Direct RTSP-style ports 554, 8554, 322, and 8080 were refused; port 6000 is
-  the only open local-video candidate seen so far.
-- `tools/official_live_probe.cpp` supports `video`, `ex`, `audio`, and
-  `studio` call-order modes plus optional extra query parameters. `build.sh`
-  builds it only when a host C++ compiler is installed.
-- `libBambuSource.so` masks local URL host and credential query values in logs
-  and treats `SSL_ERROR_ZERO_RETURN` as stream end rather than continuing to
-  report "playing" with no frames.
+- [CHANGELOG.md](CHANGELOG.md) documents tagged release history.
+- [SECURITY.md](SECURITY.md) documents supported versions, vulnerability
+  reporting, and local TLS pinning guidance.
+- [docs/testing.md](docs/testing.md) documents the release validation checklist.
+- [docs/guided-install-plan.md](docs/guided-install-plan.md) documents the
+  completed guided installer phases.
 
-Post-release follow-up:
+## Known Limitations
 
-- Get confirmation from another ARM64 Linux user and another LAN-mode printer.
-- Keep the release source-only unless binary packaging is added intentionally;
-  developer diagnostic binaries should not be shipped as end-user artifacts.
-- Continue compatibility testing for readable remote filenames, 3MF metadata
-  path detection, FTPS upload behavior, and sleep/resume reconnect behavior
-  across Studio export paths and printer models.
-- Keep cloud login, binding, Agora/cloud video, and direct RTSP unsupported
-  unless a specific local-only requirement is found.
+- Validated by the maintainer on ARM64 Linux with a Bambu Lab A1 in LAN mode.
+  Additional printer, firmware, and distro validation is still needed.
+- First connection to each LAN TLS service must happen on a trusted LAN because
+  the plugin stores a first-use certificate/public-key pin.
+- Future Bambu Studio or printer firmware changes may require compatibility
+  updates.
