@@ -2,6 +2,14 @@
 
 All notable release changes for this project are documented here.
 
+## Unreleased
+
+### Added
+
+- Release testing checklist for outside ARM64 LAN validation.
+- Redacted local diagnostics collection helper for bug reports.
+- Guided install script implementation plan.
+
 ## v0.1.1-arm64-lan - 2026-07-08
 
 Follow-up source-only ARM64 LAN support release focused on sleep/reconnect

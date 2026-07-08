@@ -89,6 +89,20 @@ Verify the media shim load behavior:
 ./build/smoke-bambu-source ./build/libBambuSource.so
 ```
 
+Release testing checklist:
+
+```text
+docs/testing.md
+```
+
+Collect a local, redacted diagnostic bundle for bug reports:
+
+```sh
+./collect-diagnostics.sh
+```
+
+Review the generated bundle before sharing it publicly.
+
 Runtime diagnostics are written to:
 
 ```text
@@ -148,6 +162,9 @@ Release and security notes:
 - See [CHANGELOG.md](CHANGELOG.md) for tagged release history.
 - See [SECURITY.md](SECURITY.md) for supported versions, vulnerability
   reporting, and local TLS pinning guidance.
+- See [docs/testing.md](docs/testing.md) for the release validation checklist.
+- See [docs/guided-install-plan.md](docs/guided-install-plan.md) for the
+  planned guided installer workflow.
 
 Troubleshooting:
 

@@ -6,3 +6,4 @@ build/
 *.tmp
 .cache/
 .forgeflow/
+diagnostics/
