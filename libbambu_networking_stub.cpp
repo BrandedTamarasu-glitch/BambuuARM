@@ -528,6 +528,8 @@ std::string ensure_local_liveview_advertised(const std::string &msg, bool *chang
 
 std::string path_basename(const std::string &path);
 
+constexpr size_t kGcodeParamScanChunkBytes = 64 * 1024;
+
 std::string strip_extension(std::string name)
 {
     const auto slash = name.find_last_of("/\\");
@@ -536,25 +538,55 @@ std::string strip_extension(std::string name)
     return name;
 }
 
-bool file_contains_text(const std::string &path, const std::string &needle)
-{
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-    const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    return data.find(needle) != std::string::npos;
-}
-
 std::string embedded_gcode_param(const std::string &path)
 {
-    for (int plate = 1; plate <= 32; ++plate) {
-        const std::string candidate = "Metadata/plate_" + std::to_string(plate) + ".gcode";
-        if (file_contains_text(path, candidate)) return candidate;
-    }
+    std::vector<std::string> candidates;
+    candidates.reserve(33);
+    for (int plate = 1; plate <= 32; ++plate)
+        candidates.push_back("Metadata/plate_" + std::to_string(plate) + ".gcode");
+
     const std::string base = path_basename(path);
+    std::string hidden_candidate;
     if (!base.empty() && base.front() == '.') {
         const std::string stem = strip_extension(base);
-        if (!stem.empty()) return "Metadata/" + stem + ".gcode";
+        if (!stem.empty()) {
+            hidden_candidate = "Metadata/" + stem + ".gcode";
+            candidates.push_back(hidden_candidate);
+        }
     }
+
+    std::ifstream in(path, std::ios::binary);
+    if (in) {
+        std::vector<bool> found(candidates.size(), false);
+        size_t max_candidate = 0;
+        for (const auto &candidate : candidates)
+            max_candidate = std::max(max_candidate, candidate.size());
+
+        std::string carry;
+        std::string chunk(kGcodeParamScanChunkBytes, '\0');
+        while (in) {
+            in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+            const auto n = in.gcount();
+            if (n <= 0)
+                break;
+            std::string data = carry + std::string(chunk.data(), static_cast<size_t>(n));
+            for (size_t i = 0; i < candidates.size(); ++i) {
+                if (!found[i] && data.find(candidates[i]) != std::string::npos)
+                    found[i] = true;
+            }
+            const size_t keep = max_candidate > 0 ? max_candidate - 1 : 0;
+            carry = data.size() > keep ? data.substr(data.size() - keep) : data;
+        }
+
+        for (size_t i = 0; i < 32 && i < found.size(); ++i) {
+            if (found[i])
+                return candidates[i];
+        }
+        if (!hidden_candidate.empty() && found.size() > 32 && found[32])
+            return hidden_candidate;
+    }
+    if (!hidden_candidate.empty())
+        return hidden_candidate;
     return "Metadata/plate_1.gcode";
 }
 
@@ -566,10 +598,9 @@ std::string next_sequence_id()
     return std::to_string(seq.fetch_add(1));
 }
 
-std::string project_file_payload(const BBL::PrintParams &params, const std::string &remote_path)
+std::string project_file_payload(const BBL::PrintParams &params, const std::string &remote_path, const std::string &gcode_param)
 {
     const std::string base = path_basename(params.filename);
-    const std::string gcode_param = embedded_gcode_param(params.filename);
     const std::string subtask = !params.task_name.empty() ? params.task_name :
                                 !params.project_name.empty() ? params.project_name :
                                 strip_extension(base);
@@ -1583,10 +1614,11 @@ int local_upload_and_start_print(Agent *agent, BBL::PrintParams params, BBL::OnU
         return BAMBU_NETWORK_ERR_PRINT_LP_PUBLISH_MSG_FAILED;
     }
 
-    const std::string payload = project_file_payload(params, remote_path);
+    const std::string gcode_param = embedded_gcode_param(params.filename);
+    const std::string payload = project_file_payload(params, remote_path, gcode_param);
     log_line(agent, "local print publish dev_id=" + masked_len(params.dev_id) +
                     " remote=" + path_basename(remote_path) +
-                    " gcode_param=" + embedded_gcode_param(params.filename) +
+                    " gcode_param=" + gcode_param +
                     " payload_bytes=" + std::to_string(payload.size()));
     if (update) dispatch_callback(agent, [update]() { update(BBL::PrintingStageSending, 0, "Starting print over LAN"); });
     if (!mqtt_send_publish(agent, params.dev_id, payload, 1)) {
