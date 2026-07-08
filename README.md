@@ -93,6 +93,17 @@ For non-interactive LAN seeding:
 
 For normal use, omit `--access-code` and enter it at the hidden prompt.
 
+List and restore installer backups:
+
+```sh
+./guided-install.sh --list-backups
+./guided-install.sh --restore
+./guided-install.sh --restore=YYYYMMDD-HHMMSS
+```
+
+Restore mode copies the selected backup pair back to the active plugin files
+and preserves the current active files as `*.pre-restore-<timestamp>`.
+
 Install into the user Flatpak config:
 
 ```sh

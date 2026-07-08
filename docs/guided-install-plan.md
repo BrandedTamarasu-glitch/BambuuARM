@@ -32,6 +32,8 @@ Supported options:
 ./guided-install.sh --no-build
 ./guided-install.sh --yes
 ./guided-install.sh --yes --seed-lan --seed-dev-id SERIAL_OR_DEVICE_ID --seed-dev-ip 192.0.2.50 --discovery-seed
+./guided-install.sh --list-backups
+./guided-install.sh --restore
 ```
 
 ## Phase 1: Preflight
@@ -98,6 +100,5 @@ Supported options:
 - Whether to support non-Flatpak installs later.
 - Whether the script should detect the exact Bambu Studio version from the
   Flatpak metadata or from the app itself.
-- Whether to include an uninstall/restore command in the same script or as a
-  separate helper.
+- List/restore backup support is implemented in `guided-install.sh`.
 - Whether to launch Bambu Studio automatically after install.

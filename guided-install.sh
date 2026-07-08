@@ -12,6 +12,9 @@ seed_dev_id=""
 seed_dev_ip=""
 seed_access_code=""
 seed_dev_name=""
+mode="install"
+restore_stamp=""
+verbose_backups=0
 
 usage() {
   cat <<'EOF'
@@ -28,6 +31,9 @@ Options:
   --access-code CODE LAN access code for --seed-lan. Prefer interactive entry.
   --discovery-seed   Also write arm64_discovery_devices.jsonl.
   --dev-name NAME    Printer name for --discovery-seed.
+  --list-backups     List restorable plugin backup pairs and exit.
+  --restore[=STAMP]  Restore a plugin backup pair. Defaults to newest pair.
+  --verbose          Show file details with --list-backups.
   -h, --help         Show this help.
 
 This script builds and installs source-local ARM64 plugin shims into the current
@@ -81,6 +87,83 @@ show_build_id() {
   fi
 }
 
+backup_stamps() {
+  local network
+  local stamp
+  shopt -s nullglob
+  for network in "$plugin_dir"/libbambu_networking.so.backup-*; do
+    stamp="${network##*.backup-}"
+    if [[ -f "$plugin_dir/libBambuSource.so.backup-$stamp" ]]; then
+      echo "$stamp"
+    fi
+  done | sort -u
+  shopt -u nullglob
+}
+
+list_backups() {
+  local stamps
+  mapfile -t stamps < <(backup_stamps)
+  if [[ "${#stamps[@]}" -eq 0 ]]; then
+    echo "No complete plugin backup pairs found in $plugin_dir"
+    return 1
+  fi
+  echo "Complete plugin backup pairs:"
+  local newest="${stamps[-1]}"
+  local stamp
+  for stamp in "${stamps[@]}"; do
+    if [[ "$stamp" == "$newest" ]]; then
+      echo "  $stamp (newest)"
+    else
+      echo "  $stamp"
+    fi
+    if [[ "$verbose_backups" == "1" ]]; then
+      file "$plugin_dir/libbambu_networking.so.backup-$stamp" "$plugin_dir/libBambuSource.so.backup-$stamp" | sed 's/^/    /'
+    fi
+  done
+}
+
+newest_backup_stamp() {
+  backup_stamps | tail -n 1
+}
+
+restore_backup() {
+  local stamp="$1"
+  if [[ -z "$stamp" ]]; then
+    stamp="$(newest_backup_stamp)"
+  fi
+  [[ -n "$stamp" ]] || die "no complete plugin backup pairs found"
+  local network_backup="$plugin_dir/libbambu_networking.so.backup-$stamp"
+  local source_backup="$plugin_dir/libBambuSource.so.backup-$stamp"
+  [[ -f "$network_backup" ]] || die "missing backup: $network_backup"
+  [[ -f "$source_backup" ]] || die "missing backup: $source_backup"
+
+  echo "Selected backup pair: $stamp"
+  file "$network_backup" "$source_backup"
+  echo
+  confirm "Restore this backup pair into the active plugin files?" || die "restore cancelled"
+
+  local rollback_stamp
+  rollback_stamp="$(date +%Y%m%d-%H%M%S)"
+  if [[ -e "$plugin_dir/libbambu_networking.so" ]]; then
+    cp -a "$plugin_dir/libbambu_networking.so" "$plugin_dir/libbambu_networking.so.pre-restore-$rollback_stamp"
+  fi
+  if [[ -e "$plugin_dir/libBambuSource.so" ]]; then
+    cp -a "$plugin_dir/libBambuSource.so" "$plugin_dir/libBambuSource.so.pre-restore-$rollback_stamp"
+  fi
+  cp -a "$network_backup" "$plugin_dir/libbambu_networking.so"
+  cp -a "$source_backup" "$plugin_dir/libBambuSource.so"
+
+  echo
+  echo "Restored active plugin files:"
+  file "$plugin_dir/libbambu_networking.so" "$plugin_dir/libBambuSource.so"
+  echo
+  echo "Restored Build IDs:"
+  show_build_id "$plugin_dir/libbambu_networking.so"
+  show_build_id "$plugin_dir/libBambuSource.so"
+  echo
+  echo "Previous active files were preserved as *.pre-restore-$rollback_stamp"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --source-dir)
@@ -132,6 +215,23 @@ while [[ $# -gt 0 ]]; do
       seed_dev_name="$2"
       shift 2
       ;;
+    --list-backups)
+      mode="list-backups"
+      shift
+      ;;
+    --restore)
+      mode="restore"
+      shift
+      ;;
+    --restore=*)
+      mode="restore"
+      restore_stamp="${1#--restore=}"
+      shift
+      ;;
+    --verbose)
+      verbose_backups=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -157,16 +257,29 @@ config_dir="$HOME/.var/app/com.bambulab.BambuStudio/config/BambuStudio"
 plugin_dir="$config_dir/plugins"
 
 [[ -d "$config_dir" ]] || die "Bambu Studio Flatpak config not found: $config_dir. Launch Bambu Studio once first."
-[[ -d "$source_dir" ]] || die "Bambu Studio source checkout not found: $source_dir. Pass --source-dir PATH or set BAMBU_STUDIO_SOURCE_DIR."
-[[ -f "$source_dir/src/slic3r/Utils/NetworkAgent.cpp" ]] || die "source checkout does not look like Bambu Studio source: $source_dir"
 
 echo "BambuuARM guided installer"
 echo
 echo "Project: $project_dir"
-echo "Bambu Studio source: $source_dir"
 echo "Flatpak config: $config_dir"
 echo "Plugin target: $plugin_dir"
 echo
+
+if [[ "$mode" == "list-backups" ]]; then
+  list_backups
+  exit 0
+fi
+
+if [[ "$mode" == "restore" ]]; then
+  restore_backup "$restore_stamp"
+  exit 0
+fi
+
+echo "Bambu Studio source: $source_dir"
+echo
+
+[[ -d "$source_dir" ]] || die "Bambu Studio source checkout not found: $source_dir. Pass --source-dir PATH or set BAMBU_STUDIO_SOURCE_DIR."
+[[ -f "$source_dir/src/slic3r/Utils/NetworkAgent.cpp" ]] || die "source checkout does not look like Bambu Studio source: $source_dir"
 
 if [[ -n "$(git -C "$project_dir" status --short)" ]]; then
   echo "warning: working tree has local changes; this installer will build the current checkout."

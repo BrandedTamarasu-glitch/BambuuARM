@@ -100,3 +100,25 @@ If something fails, run:
 Attach the generated tarball from `diagnostics/` only after reviewing it. The
 script redacts likely secrets and local IP addresses, but manual review is still
 required before sharing diagnostics publicly.
+
+## Cleanup Or Restore
+
+To list plugin backups created by installer runs:
+
+```sh
+./guided-install.sh --list-backups
+```
+
+To restore the newest complete backup pair:
+
+```sh
+./guided-install.sh --restore
+```
+
+To restore a specific pair:
+
+```sh
+./guided-install.sh --restore=YYYYMMDD-HHMMSS
+```
+
+After restoring, restart Bambu Studio.

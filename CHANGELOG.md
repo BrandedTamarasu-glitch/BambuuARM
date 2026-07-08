@@ -10,6 +10,7 @@ All notable release changes for this project are documented here.
 - Redacted local diagnostics collection helper for bug reports.
 - Guided install script and implementation plan.
 - Non-interactive LAN seeding options for the guided installer.
+- Guided installer backup listing and restore support.
 
 ## v0.1.1-arm64-lan - 2026-07-08
 
