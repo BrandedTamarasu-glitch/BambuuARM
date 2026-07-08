@@ -71,6 +71,16 @@ Quick start:
    status, FTPS upload, local print start, and LAN liveview are the intended
    working paths.
 
+Guided install wrapper:
+
+```sh
+./guided-install.sh
+```
+
+The guided installer checks prerequisites, runs the build and export verifier,
+shows BuildIDs, asks before installing into the user Flatpak config, and can
+optionally seed LAN printer config with `--seed-lan`.
+
 Install into the user Flatpak config:
 
 ```sh
