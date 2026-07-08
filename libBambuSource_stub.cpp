@@ -50,6 +50,7 @@ struct StubTunnel {
     std::vector<uint8_t> first_sample;
     uint64_t first_decode_time = 0;
     uint32_t max_frame_size = 1024 * 1024;
+    uint64_t sample_count = 0;
 };
 
 std::mutex g_error_mutex;
@@ -80,6 +81,26 @@ void log_line(const std::string &message)
     char ts[32] = {};
     std::strftime(ts, sizeof(ts), "%F %T", std::localtime(&now));
     log << ts << " " << message << "\n";
+}
+
+bool verbose_logging()
+{
+    const char *value = std::getenv("BAMBU_ARM_VERBOSE_LOG");
+    if (!value)
+        return false;
+    return std::strcmp(value, "1") == 0 ||
+           std::strcmp(value, "true") == 0 ||
+           std::strcmp(value, "TRUE") == 0 ||
+           std::strcmp(value, "yes") == 0 ||
+           std::strcmp(value, "YES") == 0 ||
+           std::strcmp(value, "on") == 0 ||
+           std::strcmp(value, "ON") == 0;
+}
+
+void log_debug(const std::string &message)
+{
+    if (verbose_logging())
+        log_line(message);
 }
 
 std::string masked(const std::string &value)
@@ -682,7 +703,8 @@ extern "C" int Bambu_ReadSample(Bambu_Tunnel tunnel, Bambu_Sample *sample)
         sample->buffer = stub->first_sample.data();
         sample->decode_time = stub->first_decode_time;
         stub->first_sample_ready = false;
-        log_line("Bambu_ReadSample returning first size=" + std::to_string(sample->size));
+        ++stub->sample_count;
+        log_debug("Bambu_ReadSample returning first size=" + std::to_string(sample->size));
         return Bambu_success;
     }
 
@@ -699,7 +721,7 @@ extern "C" int Bambu_ReadSample(Bambu_Tunnel tunnel, Bambu_Sample *sample)
             return Bambu_stream_end;
         }
         stub->read_wait_count++;
-        if (stub->read_wait_count == 1 || stub->read_wait_count % 10 == 0)
+        if (verbose_logging() && (stub->read_wait_count == 1 || stub->read_wait_count % 30 == 0))
             log_line("Bambu_ReadSample waiting count=" + std::to_string(stub->read_wait_count));
         set_error("ARM64 BambuSource local stream waiting for sample");
         return Bambu_would_block;
@@ -711,8 +733,11 @@ extern "C" int Bambu_ReadSample(Bambu_Tunnel tunnel, Bambu_Sample *sample)
     sample->flags = stub->stream_is_mjpeg ? f_sync : 0;
     sample->buffer = stub->first_sample.data();
     sample->decode_time = header.sequence;
-    log_line("Bambu_ReadSample returning size=" + std::to_string(sample->size) +
-             " kind=" + std::to_string(header.kind));
+    ++stub->sample_count;
+    if (verbose_logging() && (stub->sample_count <= 3 || stub->sample_count % 150 == 0))
+        log_line("Bambu_ReadSample returning size=" + std::to_string(sample->size) +
+                 " kind=" + std::to_string(header.kind) +
+                 " count=" + std::to_string(stub->sample_count));
     return Bambu_success;
 }
 
@@ -745,6 +770,7 @@ extern "C" void Bambu_Close(Bambu_Tunnel tunnel)
         stub->read_wait_count = 0;
         stub->first_sample.clear();
         stub->max_frame_size = 1024 * 1024;
+        stub->sample_count = 0;
     }
     log_line("Bambu_Close");
 }

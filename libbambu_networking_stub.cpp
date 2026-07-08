@@ -120,12 +120,31 @@ std::string trust_store_path(const Agent *agent)
     return "/tmp/arm64_trusted_tls_pins.txt";
 }
 
+bool verbose_logging()
+{
+    const char *value = std::getenv("BAMBU_ARM_VERBOSE_LOG");
+    if (!value)
+        return false;
+    return std::strcmp(value, "1") == 0 ||
+           std::strcmp(value, "true") == 0 ||
+           std::strcmp(value, "TRUE") == 0 ||
+           std::strcmp(value, "yes") == 0 ||
+           std::strcmp(value, "YES") == 0 ||
+           std::strcmp(value, "on") == 0 ||
+           std::strcmp(value, "ON") == 0;
+}
+
 void log_line(const Agent *agent, const std::string &line)
 {
     std::lock_guard<std::mutex> lock(g_log_mutex);
     std::ofstream out(log_path(agent), std::ios::app);
     if (!out) return;
     out << now_string() << " " << line << "\n";
+}
+
+void log_debug(const Agent *agent, const std::string &line)
+{
+    if (verbose_logging()) log_line(agent, line);
 }
 
 void log_call(const char *name)
@@ -135,6 +154,11 @@ void log_call(const char *name)
 
 void log_call(const Agent *agent, const char *name)
 {
+    if (!verbose_logging() &&
+        (std::strcmp(name, "bambu_network_is_user_login") == 0 ||
+         std::strcmp(name, "bambu_network_user_logout") == 0)) {
+        return;
+    }
     log_line(agent, std::string(name));
 }
 
@@ -965,7 +989,7 @@ void discovery_loop(Agent *agent)
             send_msearch(probe_fd, 1900, "urn:bambulab-com:device:3dprinter:1");
             send_msearch(probe_fd, 1990, "ssdp:all");
             send_msearch(probe_fd, 1990, "urn:bambulab-com:device:3dprinter:1");
-            log_line(agent, "discovery probe sent");
+            log_debug(agent, "discovery probe sent");
             last_probe = now;
         }
 
@@ -994,8 +1018,8 @@ void discovery_loop(Agent *agent)
                 const std::string sender_ip = ip_from_sockaddr(from);
                 const std::string lowered = lower_copy(packet);
                 if (lowered.find("bambu") != std::string::npos || lowered.find("bbl") != std::string::npos || lowered.find("3dprinter") != std::string::npos) {
-                    log_line(agent, "discovery candidate sender=" + masked_len(sender_ip) +
-                                    " bytes=" + std::to_string(n));
+                    log_debug(agent, "discovery candidate sender=" + masked_len(sender_ip) +
+                                     " bytes=" + std::to_string(n));
                 }
                 emit_discovery(agent, discovery_json_from_packet(packet, sender_ip));
             }
@@ -1267,8 +1291,8 @@ void mqtt_reader_loop(Agent *agent, std::string dev_id)
             std::string msg(reinterpret_cast<const char *>(payload.data() + offset), payload.size() - offset);
             bool liveview_injected = false;
             msg = ensure_local_liveview_advertised(msg, &liveview_injected);
-            log_line(agent, "mqtt publish received dev_id=" + masked_len(dev_id) +
-                                    " bytes=" + std::to_string(msg.size()));
+            log_debug(agent, "mqtt publish received dev_id=" + masked_len(dev_id) +
+                              " bytes=" + std::to_string(msg.size()));
             if (liveview_injected)
                 log_line(agent, "mqtt status injected ipcam.liveview local protocol");
             auto fn = agent->on_local_message ? agent->on_local_message : agent->on_message;
@@ -1277,9 +1301,9 @@ void mqtt_reader_loop(Agent *agent, std::string dev_id)
         } else if (packet_type == 0x90) {
             log_line(agent, "mqtt suback bytes=" + std::to_string(payload.size()));
         } else if (packet_type == 0xd0) {
-            log_line(agent, "mqtt pingresp");
+            log_debug(agent, "mqtt pingresp");
         } else if (packet_type == 0x40) {
-            log_line(agent, "mqtt puback");
+            log_debug(agent, "mqtt puback");
         } else {
             log_line(agent, "mqtt packet type=0x" + std::to_string(packet_type) + " bytes=" + std::to_string(payload.size()));
         }
@@ -1856,8 +1880,16 @@ bool bambu_network_start_discovery(void *agent, bool start, bool sending)
 }
 
 int bambu_network_change_user(void *agent, std::string) { log_call(static_cast<Agent *>(agent), __func__); return BAMBU_NETWORK_SUCCESS; }
-bool bambu_network_is_user_login(void *agent) { log_call(static_cast<Agent *>(agent), __func__); return false; }
-int bambu_network_user_logout(void *agent, bool) { log_call(static_cast<Agent *>(agent), __func__); return BAMBU_NETWORK_SUCCESS; }
+bool bambu_network_is_user_login(void *agent)
+{
+    log_debug(static_cast<Agent *>(agent), __func__);
+    return false;
+}
+int bambu_network_user_logout(void *agent, bool)
+{
+    log_debug(static_cast<Agent *>(agent), __func__);
+    return BAMBU_NETWORK_SUCCESS;
+}
 std::string bambu_network_get_user_id(void *) { return {}; }
 std::string bambu_network_get_user_name(void *) { return {}; }
 std::string bambu_network_get_user_avatar(void *) { return {}; }
