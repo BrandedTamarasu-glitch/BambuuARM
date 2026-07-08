@@ -2,6 +2,38 @@
 
 All notable release changes for this project are documented here.
 
+## v0.1.1-arm64-lan - 2026-07-08
+
+Follow-up source-only ARM64 LAN support release focused on sleep/reconnect
+behavior, lower logging overhead, and local print/upload performance.
+
+### Changed
+
+- Hardened MQTT connect/reconnect lifecycle handling so reconnect workers are
+  owned and serialized instead of detached.
+- Improved post-sleep LAN reconnect behavior so Studio can keep or quickly
+  restore the selected printer without requiring a full application restart.
+- Reduced default hot-path logging for login polling, discovery probes, MQTT
+  receive/ping acknowledgements, and per-frame liveview reads. Set
+  `BAMBU_ARM_VERBOSE_LOG=1` to enable those verbose diagnostics.
+- Optimized 3MF G-code parameter detection from repeated full-file scans to a
+  single streaming scan, while preserving `Metadata/plate_N.gcode` and hidden
+  Studio temp-export fallback behavior.
+- Changed explicit connection refreshes to send MQTT `pushall` when already
+  connected, falling back to reconnect only when the MQTT session is unusable.
+- Added immediate status refresh after successful printer connect and local
+  `project_file` publish.
+- Cached FTPS TLS pin preflight results for repeated uploads to the same
+  selected printer endpoint in a session.
+
+### Validation
+
+- Rebuilt and installed the ARM64 shims locally after each phase.
+- Verified required exported symbols.
+- Smoke-tested Bambu Studio Flatpak startup after the final phase.
+- Confirmed one successful full local print and a second clean local print start
+  before the follow-up performance phases.
+
 ## v0.1.0-arm64-lan - 2026-07-07
 
 Initial source-only ARM64 LAN support release.

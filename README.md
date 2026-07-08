@@ -115,6 +115,10 @@ Supported local behavior:
 - LAN liveview through the local port-`6000` tunnel. The implemented stream path
   matches the x86 plugin's combined `0x3000` TLS write and advertises the
   printer's MJPEG frames to Studio.
+- Sleep/resume-oriented MQTT reconnect handling with direct `pushall` status
+  refreshes when the selected printer is already connected.
+- Lower default diagnostic overhead, with verbose hot-path logs available by
+  launching Studio with `BAMBU_ARM_VERBOSE_LOG=1`.
 
 Unsupported behavior:
 
@@ -219,6 +223,22 @@ Current verified state:
   sending shorter-interval MQTT pings, treats ping/publish failures as reconnect
   triggers, retries LAN MQTT reconnects with backoff, and sends `pushall` after
   reconnect so Studio refreshes printer state without needing a full restart.
+- MQTT connect/reconnect workers are now owned and serialized by the agent, so
+  reconnect lifecycle work is not left in detached background threads.
+- `bambu_network_refresh_connection` now sends an immediate `pushall` status
+  refresh when MQTT is already connected instead of forcing a reconnect. A
+  reconnect is scheduled only when the active session is unusable.
+- The local print path sends a status refresh after a successful `project_file`
+  publish so Studio sees the printer transition sooner.
+- Default logs suppress high-frequency login polling, discovery probe/candidate,
+  MQTT receive/ping acknowledgement, and liveview sample-read messages. Set
+  `BAMBU_ARM_VERBOSE_LOG=1` when those diagnostics are needed.
+- The 3MF G-code parameter lookup now uses a single streaming scan instead of
+  repeated full-file reads, while preserving plate path and Studio temp-export
+  fallbacks.
+- FTPS TLS pin preflight results are cached per selected-printer endpoint during
+  a session, so repeated uploads do not redo the same preflight unless the
+  connected endpoint changes.
 - `libBambuSource.so` now exports the complete `Bambu_*` media ABI expected by
   Studio on ARM64. It creates/destroys tunnels, opens local port-6000 TLS
   liveview, advertises the printer's MJPEG stream, implements both
@@ -297,7 +317,8 @@ Post-release follow-up:
 - Get confirmation from another ARM64 Linux user and another LAN-mode printer.
 - Keep the release source-only unless binary packaging is added intentionally;
   developer diagnostic binaries should not be shipped as end-user artifacts.
-- Continue compatibility testing for readable remote filenames across Studio
-  export paths and printer models.
+- Continue compatibility testing for readable remote filenames, 3MF metadata
+  path detection, FTPS upload behavior, and sleep/resume reconnect behavior
+  across Studio export paths and printer models.
 - Keep cloud login, binding, Agora/cloud video, and direct RTSP unsupported
   unless a specific local-only requirement is found.
