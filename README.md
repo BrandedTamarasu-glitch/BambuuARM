@@ -81,6 +81,10 @@ The guided installer checks prerequisites, runs the build and export verifier,
 shows BuildIDs, asks before installing into the user Flatpak config, and can
 optionally seed LAN printer config with `--seed-lan`.
 
+Close Bambu Studio before install or restore. The guided installer refuses to
+replace active plugin files while Studio appears to be running unless `--force`
+is provided.
+
 For non-interactive LAN seeding:
 
 ```sh

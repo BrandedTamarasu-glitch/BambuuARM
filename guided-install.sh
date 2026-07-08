@@ -16,6 +16,7 @@ mode="install"
 restore_stamp=""
 verbose_backups=0
 run_diagnostics=0
+force=0
 
 usage() {
   cat <<'EOF'
@@ -36,6 +37,7 @@ Options:
   --restore[=STAMP]  Restore a plugin backup pair. Defaults to newest pair.
   --doctor           Report environment, plugin, build, and backup status.
   --diagnostics      Run collect-diagnostics.sh after install or restore.
+  --force            Allow install or restore while Bambu Studio appears open.
   --verbose          Show file details with --list-backups.
   -h, --help         Show this help.
 
@@ -114,6 +116,31 @@ maybe_run_diagnostics() {
   fi
 }
 
+bambu_studio_processes() {
+  ps -eo pid=,comm=,args= | awk '
+    /\/app\/bin\/bambu-studio/ ||
+    /flatpak run .*com\.bambulab\.BambuStudio/ ||
+    /com\.bambulab\.BambuStudio/ {
+      if ($0 !~ /awk / && $0 !~ /guided-install\.sh/)
+        print
+    }'
+}
+
+ensure_studio_not_running() {
+  local matches
+  matches="$(bambu_studio_processes || true)"
+  if [[ -z "$matches" ]]; then
+    return 0
+  fi
+  echo "Bambu Studio appears to be running:"
+  echo "$matches" | sed 's/^/  /'
+  if [[ "$force" == "1" ]]; then
+    echo "warning: continuing because --force was provided"
+    return 0
+  fi
+  die "close Bambu Studio before install/restore, or rerun with --force"
+}
+
 backup_stamps() {
   local network
   local stamp
@@ -167,6 +194,7 @@ restore_backup() {
   echo "Selected backup pair: $stamp"
   file "$network_backup" "$source_backup"
   echo
+  ensure_studio_not_running
   confirm "Restore this backup pair into the active plugin files?" || die "restore cancelled"
 
   local rollback_stamp
@@ -225,6 +253,16 @@ doctor() {
     failures=$((failures + 1))
   fi
   echo "Plugin directory: $plugin_dir"
+
+  echo
+  local running
+  running="$(bambu_studio_processes || true)"
+  if [[ -n "$running" ]]; then
+    echo "Bambu Studio process: running"
+    echo "$running" | sed 's/^/  /'
+  else
+    echo "Bambu Studio process: not running"
+  fi
 
   echo
   echo "Bambu Studio source checkout:"
@@ -352,6 +390,10 @@ while [[ $# -gt 0 ]]; do
       run_diagnostics=1
       shift
       ;;
+    --force)
+      force=1
+      shift
+      ;;
     --verbose)
       verbose_backups=1
       shift
@@ -462,6 +504,7 @@ for file in "$plugin_dir/libbambu_networking.so" "$plugin_dir/libBambuSource.so"
 done
 echo
 
+ensure_studio_not_running
 confirm "Install rebuilt plugins into the Bambu Studio Flatpak user config?" || die "install cancelled"
 
 "$project_dir/install-flatpak-user.sh"

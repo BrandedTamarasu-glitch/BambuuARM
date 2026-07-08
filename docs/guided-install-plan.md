@@ -36,6 +36,7 @@ Supported options:
 ./guided-install.sh --restore
 ./guided-install.sh --doctor
 ./guided-install.sh --diagnostics
+./guided-install.sh --force
 ```
 
 ## Phase 1: Preflight
@@ -48,6 +49,7 @@ Supported options:
   flow.
 - Confirm the working tree is clean or warn the user that local changes are
   being built. Implemented.
+- Detect a running Bambu Studio process before install or restore. Implemented.
 
 ## Phase 2: Build And Verify
 
@@ -97,6 +99,8 @@ Supported options:
   `install-flatpak-user.sh`.
 - Do not delete old backups automatically. Implemented.
 - Do not send diagnostics anywhere. Implemented.
+- Refuse install or restore while Bambu Studio appears to be running, unless
+  `--force` is provided. Implemented.
 
 ## Open Questions
 

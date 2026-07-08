@@ -50,6 +50,10 @@ Expected result:
 - Printer status updates over LAN MQTT.
 - `arm64_network_stub.log` shows `connect ok` and a `pushall` refresh.
 
+Close Bambu Studio before running install or restore commands. The guided
+installer should refuse to replace active plugin files while Studio is running
+unless `--force` is provided.
+
 ## Upload And Local Print
 
 Use a small, low-risk print file.
