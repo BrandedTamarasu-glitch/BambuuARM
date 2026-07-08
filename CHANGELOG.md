@@ -4,6 +4,12 @@ All notable release changes for this project are documented here.
 
 ## Unreleased
 
+No unreleased changes yet.
+
+## v0.1.3-arm64-lan - 2026-07-08
+
+Source-only ARM64 LAN hardening release following the full Forgeflow review.
+
 ### Changed
 
 - Hardened Flatpak plugin install so staged plugin files are prepared before
