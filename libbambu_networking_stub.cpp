@@ -518,6 +518,11 @@ std::string embedded_gcode_param(const std::string &path)
         const std::string candidate = "Metadata/plate_" + std::to_string(plate) + ".gcode";
         if (file_contains_text(path, candidate)) return candidate;
     }
+    const std::string base = path_basename(path);
+    if (!base.empty() && base.front() == '.') {
+        const std::string stem = strip_extension(base);
+        if (!stem.empty()) return "Metadata/" + stem + ".gcode";
+    }
     return "Metadata/plate_1.gcode";
 }
 
@@ -532,6 +537,7 @@ std::string next_sequence_id()
 std::string project_file_payload(const BBL::PrintParams &params, const std::string &remote_path)
 {
     const std::string base = path_basename(params.filename);
+    const std::string gcode_param = embedded_gcode_param(params.filename);
     const std::string subtask = !params.task_name.empty() ? params.task_name :
                                 !params.project_name.empty() ? params.project_name :
                                 strip_extension(base);
@@ -541,7 +547,7 @@ std::string project_file_payload(const BBL::PrintParams &params, const std::stri
         << "\"command\":\"project_file\","
         << "\"sequence_id\":\"" << next_sequence_id() << "\","
         << "\"url\":\"file:///sdcard/" << json_escape(remote_path) << "\","
-        << "\"param\":\"" << json_escape(embedded_gcode_param(params.filename)) << "\","
+        << "\"param\":\"" << json_escape(gcode_param) << "\","
         << "\"subtask_name\":\"" << json_escape(subtask) << "\","
         << "\"bed_leveling\":" << (params.task_bed_leveling ? "true" : "false") << ","
         << "\"flow_cali\":" << (params.task_flow_cali ? "true" : "false") << ","
@@ -1423,6 +1429,7 @@ int local_upload_and_start_print(Agent *agent, BBL::PrintParams params, BBL::OnU
     const std::string payload = project_file_payload(params, remote_path);
     log_line(agent, "local print publish dev_id=" + masked_len(params.dev_id) +
                     " remote=" + path_basename(remote_path) +
+                    " gcode_param=" + embedded_gcode_param(params.filename) +
                     " payload_bytes=" + std::to_string(payload.size()));
     if (update) dispatch_callback(agent, [update]() { update(BBL::PrintingStageSending, 0, "Starting print over LAN"); });
     if (!mqtt_send_publish(agent, params.dev_id, payload, 1)) {
