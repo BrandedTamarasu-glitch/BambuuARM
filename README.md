@@ -209,11 +209,16 @@ Current verified state:
 - The first live local-print test initially failed because the payload pointed
   at `Metadata/plate_2.gcode` while the uploaded 3MF contained
   `Metadata/plate_1.gcode`. The plugin now scans the 3MF and uses the embedded
-  gcode path.
-- After that fix, the printer acknowledged `project_file` with
-  `result:"success"` and reported `gcode_state:"PREPARE"` followed by
-  `gcode_state:"RUNNING"`. The printer also generated `_plate_1.gcode` and
-  `1_.2.0.bbl` in `cache/`.
+  gcode path, with a fallback for Studio temp exports whose internal path uses
+  a hidden `Metadata/.<temp>.gcode` name.
+- Local print start has been validated with one successful full print and a
+  second clean print start after the readable remote filename and gcode-param
+  fixes. The printer acknowledged `project_file` with `result:"success"` and
+  reported `gcode_state:"PREPARE"` followed by `gcode_state:"RUNNING"`.
+- The ARM networking shim detects stale MQTT sockets after system sleep by
+  sending shorter-interval MQTT pings, treats ping/publish failures as reconnect
+  triggers, retries LAN MQTT reconnects with backoff, and sends `pushall` after
+  reconnect so Studio refreshes printer state without needing a full restart.
 - `libBambuSource.so` now exports the complete `Bambu_*` media ABI expected by
   Studio on ARM64. It creates/destroys tunnels, opens local port-6000 TLS
   liveview, advertises the printer's MJPEG stream, implements both

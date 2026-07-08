@@ -72,6 +72,8 @@ struct Agent {
     std::mutex connection_mutex;
     std::string connected_dev_id;
     std::string connected_dev_ip;
+    std::string connected_username;
+    std::string connected_password;
     int connected_port = 0;
     bool connected_use_ssl = false;
     std::mutex cert_mutex;
@@ -80,6 +82,8 @@ struct Agent {
     SSL_CTX *ssl_ctx = nullptr;
     SSL *ssl = nullptr;
     std::atomic<bool> mqtt_running{false};
+    std::atomic<bool> mqtt_stop_requested{false};
+    std::atomic<bool> mqtt_reconnecting{false};
     std::thread mqtt_thread;
     std::mutex mqtt_mutex;
     uint16_t mqtt_packet_id = 1;
@@ -599,6 +603,8 @@ std::string dev_id_from_usn(std::string usn)
 }
 
 void stop_mqtt(Agent *agent);
+bool start_mqtt(Agent *agent, const std::string &dev_id, const std::string &host, int port, const std::string &username, const std::string &password, std::string &error);
+void schedule_mqtt_reconnect(Agent *agent, const std::string &reason);
 
 std::string path_basename(const std::string &path)
 {
@@ -1226,8 +1232,11 @@ void mqtt_reader_loop(Agent *agent, std::string dev_id)
     auto last_ping = std::chrono::steady_clock::now();
     while (agent->mqtt_running.load()) {
         const auto now = std::chrono::steady_clock::now();
-        if (now - last_ping > std::chrono::seconds(25)) {
-            ssl_write_all(agent, mqtt_packet(0xc0, {}));
+        if (now - last_ping > std::chrono::seconds(8)) {
+            if (!ssl_write_all(agent, mqtt_packet(0xc0, {}))) {
+                log_line(agent, "mqtt ping failed dev_id=" + masked_len(dev_id));
+                break;
+            }
             last_ping = now;
         }
 
@@ -1269,14 +1278,18 @@ void mqtt_reader_loop(Agent *agent, std::string dev_id)
     }
     agent->mqtt_running.store(false);
     log_line(agent, "mqtt reader stop dev_id=" + masked_len(dev_id));
+    if (!agent->mqtt_stop_requested.load())
+        schedule_mqtt_reconnect(agent, "mqtt_reader_stopped");
 }
 
 void stop_mqtt(Agent *agent)
 {
     if (!agent) return;
+    agent->mqtt_stop_requested.store(true);
     agent->mqtt_running.store(false);
     if (agent->mqtt_fd >= 0) shutdown(agent->mqtt_fd, SHUT_RDWR);
-    if (agent->mqtt_thread.joinable()) agent->mqtt_thread.join();
+    if (agent->mqtt_thread.joinable() && agent->mqtt_thread.get_id() != std::this_thread::get_id())
+        agent->mqtt_thread.join();
     if (agent->ssl) {
         SSL_free(agent->ssl);
         agent->ssl = nullptr;
@@ -1294,6 +1307,7 @@ void stop_mqtt(Agent *agent)
 bool start_mqtt(Agent *agent, const std::string &dev_id, const std::string &host, int port, const std::string &username, const std::string &password, std::string &error)
 {
     stop_mqtt(agent);
+    agent->mqtt_stop_requested.store(false);
     SSL_library_init();
     SSL_load_error_strings();
 
@@ -1402,6 +1416,80 @@ bool start_mqtt(Agent *agent, const std::string &dev_id, const std::string &host
     return true;
 }
 
+void request_full_status(Agent *agent, const std::string &dev_id)
+{
+    const std::string payload = "{\"pushing\":{\"sequence_id\":\"" + json_escape(next_sequence_id()) + "\",\"command\":\"pushall\"}}";
+    if (mqtt_send_publish(agent, dev_id, payload, 0))
+        log_line(agent, "mqtt refresh pushall sent dev_id=" + masked_len(dev_id));
+    else
+        log_line(agent, "mqtt refresh pushall failed dev_id=" + masked_len(dev_id));
+}
+
+void schedule_mqtt_reconnect(Agent *agent, const std::string &reason)
+{
+    if (!agent) return;
+    bool expected = false;
+    if (!agent->mqtt_reconnecting.compare_exchange_strong(expected, true)) return;
+
+    std::string dev_id;
+    std::string dev_ip;
+    std::string username;
+    std::string password;
+    int port = 0;
+    {
+        std::lock_guard<std::mutex> lock(agent->connection_mutex);
+        dev_id = agent->connected_dev_id;
+        dev_ip = agent->connected_dev_ip;
+        username = agent->connected_username.empty() ? "bblp" : agent->connected_username;
+        password = agent->connected_password;
+        port = agent->connected_port;
+    }
+
+    if (dev_id.empty() || dev_ip.empty() || port == 0) {
+        agent->mqtt_reconnecting.store(false);
+        return;
+    }
+
+    log_line(agent, "mqtt reconnect scheduled dev_id=" + masked_len(dev_id) + " reason=" + reason);
+    if (agent->on_local_connect) {
+        dispatch_callback(agent, [fn = agent->on_local_connect, dev_id, reason]() {
+            fn(BBL::ConnectStatusLost, dev_id, reason);
+        });
+    }
+
+    std::thread([agent, dev_id, dev_ip, username, password, port, reason]() {
+        std::string error;
+        const int delays[] = {1, 2, 3, 5, 8, 13, 20, 30};
+        for (size_t attempt = 0; attempt < sizeof(delays) / sizeof(delays[0]); ++attempt) {
+            std::this_thread::sleep_for(std::chrono::seconds(delays[attempt]));
+            error.clear();
+            log_line(agent, "mqtt reconnect attempt dev_id=" + masked_len(dev_id) +
+                            " attempt=" + std::to_string(attempt + 1));
+            if (start_mqtt(agent, dev_id, dev_ip, port, username, password, error)) {
+                log_line(agent, "mqtt reconnect ok dev_id=" + masked_len(dev_id) + " reason=" + reason);
+                agent->mqtt_reconnecting.store(false);
+                if (agent->on_local_connect) {
+                    dispatch_callback(agent, [fn = agent->on_local_connect, dev_id]() {
+                        fn(BBL::ConnectStatusOk, dev_id, "mqtt_reconnected");
+                    });
+                }
+                request_full_status(agent, dev_id);
+                return;
+            }
+            log_line(agent, "mqtt reconnect attempt failed dev_id=" + masked_len(dev_id) +
+                            " error=" + error);
+        }
+
+        log_line(agent, "mqtt reconnect exhausted dev_id=" + masked_len(dev_id) + " error=" + error);
+        agent->mqtt_reconnecting.store(false);
+        if (agent->on_local_connect) {
+            dispatch_callback(agent, [fn = agent->on_local_connect, dev_id, error]() {
+                fn(BBL::ConnectStatusFailed, dev_id, error.empty() ? "mqtt_reconnect_failed" : error);
+            });
+        }
+    }).detach();
+}
+
 int local_upload_and_start_print(Agent *agent, BBL::PrintParams params, BBL::OnUpdateStatusFn update, BBL::WasCancelledFn cancel)
 {
     if (!agent) return kInvalid;
@@ -1422,6 +1510,7 @@ int local_upload_and_start_print(Agent *agent, BBL::PrintParams params, BBL::OnU
     if (cancel && cancel()) return BAMBU_NETWORK_ERR_CANCELED;
     if (!agent->mqtt_running.load() || !agent->ssl) {
         error = "mqtt not connected";
+        schedule_mqtt_reconnect(agent, "local_print_not_connected");
         if (update) dispatch_callback(agent, [update, error]() { update(BBL::PrintingStageERROR, BAMBU_NETWORK_ERR_PRINT_LP_PUBLISH_MSG_FAILED, error); });
         return BAMBU_NETWORK_ERR_PRINT_LP_PUBLISH_MSG_FAILED;
     }
@@ -1434,6 +1523,7 @@ int local_upload_and_start_print(Agent *agent, BBL::PrintParams params, BBL::OnU
     if (update) dispatch_callback(agent, [update]() { update(BBL::PrintingStageSending, 0, "Starting print over LAN"); });
     if (!mqtt_send_publish(agent, params.dev_id, payload, 1)) {
         error = "mqtt publish failed";
+        schedule_mqtt_reconnect(agent, "local_print_publish_failed");
         if (update) dispatch_callback(agent, [update, error]() { update(BBL::PrintingStageERROR, BAMBU_NETWORK_ERR_PRINT_LP_PUBLISH_MSG_FAILED, error); });
         return BAMBU_NETWORK_ERR_PRINT_LP_PUBLISH_MSG_FAILED;
     }
@@ -1442,11 +1532,14 @@ int local_upload_and_start_print(Agent *agent, BBL::PrintParams params, BBL::OnU
     return BAMBU_NETWORK_SUCCESS;
 }
 
-void set_connected(Agent *agent, const std::string &dev_id, const std::string &dev_ip, int port, bool use_ssl)
+void set_connected(Agent *agent, const std::string &dev_id, const std::string &dev_ip, int port, bool use_ssl,
+                   const std::string &username, const std::string &password)
 {
     std::lock_guard<std::mutex> lock(agent->connection_mutex);
     agent->connected_dev_id = dev_id;
     agent->connected_dev_ip = dev_ip;
+    agent->connected_username = username;
+    agent->connected_password = password;
     agent->connected_port = port;
     agent->connected_use_ssl = use_ssl;
 }
@@ -1456,6 +1549,8 @@ void clear_connected(Agent *agent)
     std::lock_guard<std::mutex> lock(agent->connection_mutex);
     agent->connected_dev_id.clear();
     agent->connected_dev_ip.clear();
+    agent->connected_username.clear();
+    agent->connected_password.clear();
     agent->connected_port = 0;
     agent->connected_use_ssl = false;
 }
@@ -1542,7 +1637,14 @@ bool bambu_network_is_server_connected(void *agent)
     std::lock_guard<std::mutex> lock(a->connection_mutex);
     return !a->connected_dev_id.empty();
 }
-int bambu_network_refresh_connection(void *agent) { log_call(static_cast<Agent *>(agent), __func__); return kUnsupported; }
+int bambu_network_refresh_connection(void *agent)
+{
+    auto *a = static_cast<Agent *>(agent);
+    log_call(a, __func__);
+    if (!a) return kInvalid;
+    schedule_mqtt_reconnect(a, "refresh_connection");
+    return BAMBU_NETWORK_SUCCESS;
+}
 int bambu_network_start_subscribe(void *agent, std::string) { log_call(static_cast<Agent *>(agent), __func__); return kUnsupported; }
 int bambu_network_stop_subscribe(void *agent, std::string) { log_call(static_cast<Agent *>(agent), __func__); return BAMBU_NETWORK_SUCCESS; }
 int bambu_network_add_subscribe(void *agent, std::vector<std::string>) { log_call(static_cast<Agent *>(agent), __func__); return kUnsupported; }
@@ -1607,7 +1709,7 @@ int bambu_network_connect_printer(void *agent, std::string dev_id, std::string d
                 }
                 return;
             }
-            set_connected(a, dev_id, dev_ip, connected_port, connected_port == 8883);
+            set_connected(a, dev_id, dev_ip, connected_port, connected_port == 8883, username.empty() ? "bblp" : username, password);
             log_line(a, "connect ok dev_id=" + masked_len(dev_id) +
                         " dev_ip=" + masked_len(dev_ip) +
                         " port=" + std::to_string(connected_port));
@@ -1658,9 +1760,13 @@ int bambu_network_send_message_to_printer(void *agent, std::string dev_id, std::
     if (!a) return kInvalid;
     if (!a->mqtt_running.load() || !a->ssl) {
         log_line(a, "mqtt publish skipped not connected");
+        schedule_mqtt_reconnect(a, "publish_not_connected");
         return BAMBU_NETWORK_ERR_SEND_MSG_FAILED;
     }
-    if (!mqtt_send_publish(a, dev_id, json_str, qos)) return BAMBU_NETWORK_ERR_SEND_MSG_FAILED;
+    if (!mqtt_send_publish(a, dev_id, json_str, qos)) {
+        schedule_mqtt_reconnect(a, "publish_failed");
+        return BAMBU_NETWORK_ERR_SEND_MSG_FAILED;
+    }
     log_line(a, "mqtt publish sent dev_id=" + masked_len(dev_id) + " bytes=" + std::to_string(json_str.size()));
     return BAMBU_NETWORK_SUCCESS;
 }
