@@ -20,12 +20,46 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstddef>
 #include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
 
 namespace {
+
+enum class ReadAllResult {
+    ok,
+    wait,
+    closed,
+    error,
+};
+
+enum class ReadFrameResult {
+    ok,
+    wait,
+    closed,
+    error,
+};
+
+struct FrameHeader {
+    uint32_t size;
+    uint8_t marker;
+    uint8_t channel;
+    uint8_t kind;
+    uint8_t version;
+    uint32_t sequence;
+    uint32_t reserved;
+};
+static_assert(sizeof(FrameHeader) == 16);
+
+struct FrameReadState {
+    FrameHeader header{};
+    size_t header_bytes_read = 0;
+    std::vector<uint8_t> payload;
+    size_t payload_bytes_read = 0;
+    bool reading_payload = false;
+};
 
 struct StubTunnel {
     std::string path;
@@ -53,6 +87,7 @@ struct StubTunnel {
     uint64_t first_decode_time = 0;
     uint32_t max_frame_size = 1024 * 1024;
     uint64_t sample_count = 0;
+    FrameReadState frame_read;
 };
 
 std::mutex g_error_mutex;
@@ -219,17 +254,6 @@ void tunnel_log(StubTunnel *tunnel, int level, const char *message)
         tunnel->logger(tunnel->logger_context, level, message);
 }
 
-struct FrameHeader {
-    uint32_t size;
-    uint8_t marker;
-    uint8_t channel;
-    uint8_t kind;
-    uint8_t version;
-    uint32_t sequence;
-    uint32_t reserved;
-};
-static_assert(sizeof(FrameHeader) == 16);
-
 std::string query_value(const std::string &query, const std::string &key)
 {
     size_t pos = 0;
@@ -284,13 +308,6 @@ bool ssl_write_all(SSL *ssl, const uint8_t *data, size_t size)
     return true;
 }
 
-enum class ReadAllResult {
-    ok,
-    wait,
-    closed,
-    error,
-};
-
 const char *read_all_result_name(ReadAllResult result)
 {
     switch (result) {
@@ -302,9 +319,8 @@ const char *read_all_result_name(ReadAllResult result)
     return "unknown";
 }
 
-ReadAllResult ssl_read_all(SSL *ssl, uint8_t *data, size_t size, int *last_result = nullptr, int *last_ssl_error = nullptr, unsigned long *last_err = nullptr)
+ReadAllResult ssl_read_some(SSL *ssl, uint8_t *data, size_t size, size_t &off, int *last_result = nullptr, int *last_ssl_error = nullptr, unsigned long *last_err = nullptr)
 {
-    size_t off = 0;
     while (off < size) {
         int n = SSL_read(ssl, data + off, static_cast<int>(size - off));
         if (n > 0) {
@@ -370,19 +386,23 @@ bool write_control3000(StubTunnel *tunnel)
     return ssl_write_all(tunnel->ssl, frame.data(), frame.size());
 }
 
-enum class ReadFrameResult {
-    ok,
-    wait,
-    closed,
-    error,
-};
+void reset_frame_read_state(FrameReadState &state)
+{
+    state.header = FrameHeader{};
+    state.header_bytes_read = 0;
+    state.payload_bytes_read = 0;
+    state.reading_payload = false;
+    state.payload.clear();
+}
 
-ReadFrameResult read_frame(StubTunnel *tunnel, FrameHeader &header, std::vector<uint8_t> &payload)
+ReadFrameResult read_frame(StubTunnel *tunnel, FrameHeader &header)
 {
     int last_result = 0;
     int ssl_error = 0;
     unsigned long err = 0;
-    ReadAllResult header_result = ssl_read_all(tunnel->ssl, reinterpret_cast<uint8_t *>(&header), sizeof(header), &last_result, &ssl_error, &err);
+    auto &state = tunnel->frame_read;
+    auto *header_bytes = reinterpret_cast<uint8_t *>(&state.header);
+    ReadAllResult header_result = ssl_read_some(tunnel->ssl, header_bytes, sizeof(state.header), state.header_bytes_read, &last_result, &ssl_error, &err);
     if (header_result != ReadAllResult::ok) {
         log_debug("read_frame header " + std::string(read_all_result_name(header_result)) +
                  " ssl_result=" + std::to_string(last_result) +
@@ -392,18 +412,22 @@ ReadFrameResult read_frame(StubTunnel *tunnel, FrameHeader &header, std::vector<
             return ReadFrameResult::wait;
         if (header_result == ReadAllResult::closed)
             return ReadFrameResult::closed;
+        reset_frame_read_state(state);
         return ReadFrameResult::error;
     }
-    if (header.size > 1024 * 1024) {
-        log_line("read_frame oversized size=" + std::to_string(header.size));
+    state.reading_payload = true;
+    if (state.header.size > 1024 * 1024) {
+        log_line("read_frame oversized size=" + std::to_string(state.header.size));
+        reset_frame_read_state(state);
         return ReadFrameResult::error;
     }
-    payload.assign(header.size, 0);
-    if (!payload.empty()) {
-        ReadAllResult payload_result = ssl_read_all(tunnel->ssl, payload.data(), payload.size(), &last_result, &ssl_error, &err);
+    if (state.payload.size() != state.header.size)
+        state.payload.assign(state.header.size, 0);
+    if (!state.payload.empty()) {
+        ReadAllResult payload_result = ssl_read_some(tunnel->ssl, state.payload.data(), state.payload.size(), state.payload_bytes_read, &last_result, &ssl_error, &err);
         if (payload_result != ReadAllResult::ok) {
             log_line("read_frame payload " + std::string(read_all_result_name(payload_result)) +
-                 " size=" + std::to_string(header.size) +
+                 " size=" + std::to_string(state.header.size) +
                  " ssl_result=" + std::to_string(last_result) +
                  " ssl_error=" + std::to_string(ssl_error) +
                  " err=" + std::to_string(err));
@@ -411,9 +435,13 @@ ReadFrameResult read_frame(StubTunnel *tunnel, FrameHeader &header, std::vector<
                 return ReadFrameResult::wait;
             if (payload_result == ReadAllResult::closed)
                 return ReadFrameResult::closed;
+            reset_frame_read_state(state);
             return ReadFrameResult::error;
         }
     }
+    header = state.header;
+    tunnel->first_sample.swap(state.payload);
+    reset_frame_read_state(state);
     return ReadFrameResult::ok;
 }
 
@@ -713,8 +741,7 @@ extern "C" int Bambu_ReadSample(Bambu_Tunnel tunnel, Bambu_Sample *sample)
     }
 
     FrameHeader header{};
-    std::vector<uint8_t> payload;
-    ReadFrameResult read_result = read_frame(stub, header, payload);
+    ReadFrameResult read_result = read_frame(stub, header);
     if (read_result != ReadFrameResult::ok) {
         if (read_result == ReadFrameResult::closed) {
             set_error("ARM64 BambuSource local stream closed before first frame");
@@ -731,7 +758,6 @@ extern "C" int Bambu_ReadSample(Bambu_Tunnel tunnel, Bambu_Sample *sample)
         return Bambu_would_block;
     }
     stub->read_wait_count = 0;
-    stub->first_sample = std::move(payload);
     if (stub->sample_count == 0) {
         stub->stream_is_mjpeg = looks_like_jpeg(stub->first_sample) ||
                                 !looks_like_h264_annexb(stub->first_sample);
@@ -779,6 +805,7 @@ extern "C" void Bambu_Close(Bambu_Tunnel tunnel)
         stub->stream_info_known = false;
         stub->stream_is_mjpeg = true;
         stub->read_wait_count = 0;
+        reset_frame_read_state(stub->frame_read);
         stub->first_sample.clear();
         stub->max_frame_size = 1024 * 1024;
         stub->sample_count = 0;
