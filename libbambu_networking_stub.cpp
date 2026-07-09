@@ -391,6 +391,11 @@ void dispatch_callback(Agent *agent, Fn fn)
     std::thread([fn = std::move(fn)]() mutable { fn(); }).detach();
 }
 
+void update_print_status(const BBL::OnUpdateStatusFn &update, int stage, int code, const std::string &message)
+{
+    if (update) update(stage, code, message);
+}
+
 template <class T>
 int set_cb(void *agent, T Agent::*slot, T fn, const char *name)
 {
@@ -1653,15 +1658,15 @@ int local_upload_and_start_print(Agent *agent, BBL::PrintParams params, BBL::OnU
     if (!agent) return kInvalid;
     if (cancel && cancel()) return BAMBU_NETWORK_ERR_CANCELED;
     if (params.filename.empty()) {
-        if (update) dispatch_callback(agent, [update]() { update(BBL::PrintingStageERROR, BAMBU_NETWORK_ERR_FILE_NOT_EXIST, "missing filename"); });
+        update_print_status(update, BBL::PrintingStageERROR, BAMBU_NETWORK_ERR_FILE_NOT_EXIST, "missing filename");
         return BAMBU_NETWORK_ERR_FILE_NOT_EXIST;
     }
 
-    if (update) dispatch_callback(agent, [update]() { update(BBL::PrintingStageUpload, 0, "Uploading file over LAN"); });
+    update_print_status(update, BBL::PrintingStageUpload, 0, "Uploading file over LAN");
     std::string remote_path;
     std::string error;
     if (!ftps_upload_file(agent, params, params.filename, params.ftp_folder, remote_path, error)) {
-        if (update) dispatch_callback(agent, [update, error]() { update(BBL::PrintingStageERROR, BAMBU_NETWORK_ERR_PRINT_LP_UPLOAD_FTP_FAILED, error); });
+        update_print_status(update, BBL::PrintingStageERROR, BAMBU_NETWORK_ERR_PRINT_LP_UPLOAD_FTP_FAILED, error);
         return BAMBU_NETWORK_ERR_PRINT_LP_UPLOAD_FTP_FAILED;
     }
 
@@ -1669,7 +1674,7 @@ int local_upload_and_start_print(Agent *agent, BBL::PrintParams params, BBL::OnU
     if (!agent->mqtt_running.load() || !agent->ssl) {
         error = "mqtt not connected";
         schedule_mqtt_reconnect(agent, "local_print_not_connected");
-        if (update) dispatch_callback(agent, [update, error]() { update(BBL::PrintingStageERROR, BAMBU_NETWORK_ERR_PRINT_LP_PUBLISH_MSG_FAILED, error); });
+        update_print_status(update, BBL::PrintingStageERROR, BAMBU_NETWORK_ERR_PRINT_LP_PUBLISH_MSG_FAILED, error);
         return BAMBU_NETWORK_ERR_PRINT_LP_PUBLISH_MSG_FAILED;
     }
 
@@ -1679,16 +1684,16 @@ int local_upload_and_start_print(Agent *agent, BBL::PrintParams params, BBL::OnU
                     " remote=" + path_basename(remote_path) +
                     " gcode_param=" + gcode_param +
                     " payload_bytes=" + std::to_string(payload.size()));
-    if (update) dispatch_callback(agent, [update]() { update(BBL::PrintingStageSending, 0, "Starting print over LAN"); });
+    update_print_status(update, BBL::PrintingStageSending, 0, "Starting print over LAN");
     if (!mqtt_send_publish(agent, params.dev_id, payload, 1)) {
         error = "mqtt publish failed";
         schedule_mqtt_reconnect(agent, "local_print_publish_failed");
-        if (update) dispatch_callback(agent, [update, error]() { update(BBL::PrintingStageERROR, BAMBU_NETWORK_ERR_PRINT_LP_PUBLISH_MSG_FAILED, error); });
+        update_print_status(update, BBL::PrintingStageERROR, BAMBU_NETWORK_ERR_PRINT_LP_PUBLISH_MSG_FAILED, error);
         return BAMBU_NETWORK_ERR_PRINT_LP_PUBLISH_MSG_FAILED;
     }
 
     refresh_current_status(agent, "local_print_published");
-    if (update) dispatch_callback(agent, [update, remote_path]() { update(BBL::PrintingStageWaiting, BAMBU_NETWORK_SUCCESS, remote_path); });
+    update_print_status(update, BBL::PrintingStageWaiting, BAMBU_NETWORK_SUCCESS, remote_path);
     return BAMBU_NETWORK_SUCCESS;
 }
 
@@ -2053,7 +2058,7 @@ int bambu_network_set_user_selected_machine(void *, std::string) { return BAMBU_
 int bambu_network_start_print(void *agent, BBL::PrintParams, BBL::OnUpdateStatusFn update, BBL::WasCancelledFn, BBL::OnWaitFn)
 {
     log_call(static_cast<Agent *>(agent), __func__);
-    if (update) dispatch_callback(static_cast<Agent *>(agent), [update]() { update(BBL::PrintingStageERROR, kUnsupported, "ARM64 stub plugin: cloud print unsupported"); });
+    update_print_status(update, BBL::PrintingStageERROR, kUnsupported, "ARM64 stub plugin: cloud print unsupported");
     return kUnsupported;
 }
 int bambu_network_start_local_print_with_record(void *agent, BBL::PrintParams params, BBL::OnUpdateStatusFn update, BBL::WasCancelledFn cancel, BBL::OnWaitFn)
@@ -2071,17 +2076,17 @@ int bambu_network_start_send_gcode_to_sdcard(void *agent, BBL::PrintParams param
     if (!a) return kInvalid;
     if (cancel && cancel()) return BAMBU_NETWORK_ERR_CANCELED;
     if (params.filename.empty()) {
-        if (update) dispatch_callback(a, [update]() { update(BBL::PrintingStageERROR, BAMBU_NETWORK_ERR_FILE_NOT_EXIST, "missing filename"); });
+        update_print_status(update, BBL::PrintingStageERROR, BAMBU_NETWORK_ERR_FILE_NOT_EXIST, "missing filename");
         return BAMBU_NETWORK_ERR_FILE_NOT_EXIST;
     }
-    if (update) dispatch_callback(a, [update]() { update(BBL::PrintingStageUpload, 0, "Uploading file over LAN"); });
+    update_print_status(update, BBL::PrintingStageUpload, 0, "Uploading file over LAN");
     std::string remote_path;
     std::string error;
     if (!ftps_upload_file(a, params, params.filename, params.ftp_folder, remote_path, error)) {
-        if (update) dispatch_callback(a, [update, error]() { update(BBL::PrintingStageERROR, BAMBU_NETWORK_ERR_PRINT_SG_UPLOAD_FTP_FAILED, error); });
+        update_print_status(update, BBL::PrintingStageERROR, BAMBU_NETWORK_ERR_PRINT_SG_UPLOAD_FTP_FAILED, error);
         return BAMBU_NETWORK_ERR_PRINT_SG_UPLOAD_FTP_FAILED;
     }
-    if (update) dispatch_callback(a, [update, remote_path]() { update(BBL::PrintingStageFinished, BAMBU_NETWORK_SUCCESS, remote_path); });
+    update_print_status(update, BBL::PrintingStageFinished, BAMBU_NETWORK_SUCCESS, remote_path);
     return BAMBU_NETWORK_SUCCESS;
 }
 int bambu_network_start_local_print(void *agent, BBL::PrintParams params, BBL::OnUpdateStatusFn update, BBL::WasCancelledFn cancel)
@@ -2094,7 +2099,7 @@ int bambu_network_start_local_print(void *agent, BBL::PrintParams params, BBL::O
 int bambu_network_start_sdcard_print(void *agent, BBL::PrintParams, BBL::OnUpdateStatusFn update, BBL::WasCancelledFn)
 {
     log_call(static_cast<Agent *>(agent), __func__);
-    if (update) dispatch_callback(static_cast<Agent *>(agent), [update]() { update(BBL::PrintingStageERROR, kUnsupported, "ARM64 stub plugin: sdcard print unsupported"); });
+    update_print_status(update, BBL::PrintingStageERROR, kUnsupported, "ARM64 stub plugin: sdcard print unsupported");
     return kUnsupported;
 }
 
