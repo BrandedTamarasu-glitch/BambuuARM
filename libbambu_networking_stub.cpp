@@ -847,6 +847,10 @@ bool ftps_upload_file(Agent *agent, const BBL::PrintParams &params, const std::s
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_TCP_NODELAY, 1L);
+#ifdef CURLOPT_UPLOAD_BUFFERSIZE
+    curl_easy_setopt(curl, CURLOPT_UPLOAD_BUFFERSIZE, 2L * 1024L * 1024L);
+#endif
 
     log_line(agent, "ftps upload start dev_id=" + masked_len(params.dev_id) +
                     " remote=" + path_basename(remote_path) +

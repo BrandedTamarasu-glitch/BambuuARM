@@ -12,8 +12,10 @@
 #include <openssl/evp.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <netinet/tcp.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -282,19 +284,54 @@ bool ssl_write_all(SSL *ssl, const uint8_t *data, size_t size)
     return true;
 }
 
-bool ssl_read_all(SSL *ssl, uint8_t *data, size_t size, int *last_result = nullptr)
+enum class ReadAllResult {
+    ok,
+    wait,
+    closed,
+    error,
+};
+
+const char *read_all_result_name(ReadAllResult result)
+{
+    switch (result) {
+    case ReadAllResult::ok: return "ok";
+    case ReadAllResult::wait: return "wait";
+    case ReadAllResult::closed: return "closed";
+    case ReadAllResult::error: return "error";
+    }
+    return "unknown";
+}
+
+ReadAllResult ssl_read_all(SSL *ssl, uint8_t *data, size_t size, int *last_result = nullptr, int *last_ssl_error = nullptr, unsigned long *last_err = nullptr)
 {
     size_t off = 0;
     while (off < size) {
         int n = SSL_read(ssl, data + off, static_cast<int>(size - off));
-        if (n <= 0) {
-            if (last_result)
-                *last_result = n;
-            return false;
+        if (n > 0) {
+            off += static_cast<size_t>(n);
+            continue;
         }
-        off += static_cast<size_t>(n);
+
+        int ssl_error = SSL_get_error(ssl, n);
+        unsigned long err = ERR_get_error();
+        if (last_result) *last_result = n;
+        if (last_ssl_error) *last_ssl_error = ssl_error;
+        if (last_err) *last_err = err;
+
+        if (ssl_error == SSL_ERROR_ZERO_RETURN)
+            return ReadAllResult::closed;
+        if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE)
+            return ReadAllResult::error;
+        pollfd pfd{};
+        pfd.fd = SSL_get_fd(ssl);
+        pfd.events = ssl_error == SSL_ERROR_WANT_WRITE ? POLLOUT : POLLIN;
+        int poll_rc = poll(&pfd, 1, off == 0 ? 25 : 3000);
+        if (poll_rc <= 0) {
+            if (last_result) *last_result = poll_rc;
+            return poll_rc == 0 ? ReadAllResult::wait : ReadAllResult::error;
+        }
     }
-    return true;
+    return ReadAllResult::ok;
 }
 
 bool write_frame(StubTunnel *tunnel, uint8_t kind, const std::vector<uint8_t> &payload)
@@ -343,15 +380,17 @@ enum class ReadFrameResult {
 ReadFrameResult read_frame(StubTunnel *tunnel, FrameHeader &header, std::vector<uint8_t> &payload)
 {
     int last_result = 0;
-    if (!ssl_read_all(tunnel->ssl, reinterpret_cast<uint8_t *>(&header), sizeof(header), &last_result)) {
-        int ssl_error = SSL_get_error(tunnel->ssl, last_result);
-        unsigned long err = ERR_get_error();
-        log_line("read_frame header failed ssl_result=" + std::to_string(last_result) +
+    int ssl_error = 0;
+    unsigned long err = 0;
+    ReadAllResult header_result = ssl_read_all(tunnel->ssl, reinterpret_cast<uint8_t *>(&header), sizeof(header), &last_result, &ssl_error, &err);
+    if (header_result != ReadAllResult::ok) {
+        log_debug("read_frame header " + std::string(read_all_result_name(header_result)) +
+                 " ssl_result=" + std::to_string(last_result) +
                  " ssl_error=" + std::to_string(ssl_error) +
                  " err=" + std::to_string(err));
-        if (ssl_error == SSL_ERROR_WANT_READ || ssl_error == SSL_ERROR_WANT_WRITE)
+        if (header_result == ReadAllResult::wait)
             return ReadFrameResult::wait;
-        if (ssl_error == SSL_ERROR_ZERO_RETURN)
+        if (header_result == ReadAllResult::closed)
             return ReadFrameResult::closed;
         return ReadFrameResult::error;
     }
@@ -360,18 +399,20 @@ ReadFrameResult read_frame(StubTunnel *tunnel, FrameHeader &header, std::vector<
         return ReadFrameResult::error;
     }
     payload.assign(header.size, 0);
-    if (!payload.empty() && !ssl_read_all(tunnel->ssl, payload.data(), payload.size(), &last_result)) {
-        int ssl_error = SSL_get_error(tunnel->ssl, last_result);
-        unsigned long err = ERR_get_error();
-        log_line("read_frame payload failed size=" + std::to_string(header.size) +
+    if (!payload.empty()) {
+        ReadAllResult payload_result = ssl_read_all(tunnel->ssl, payload.data(), payload.size(), &last_result, &ssl_error, &err);
+        if (payload_result != ReadAllResult::ok) {
+            log_line("read_frame payload " + std::string(read_all_result_name(payload_result)) +
+                 " size=" + std::to_string(header.size) +
                  " ssl_result=" + std::to_string(last_result) +
                  " ssl_error=" + std::to_string(ssl_error) +
                  " err=" + std::to_string(err));
-        if (ssl_error == SSL_ERROR_WANT_READ || ssl_error == SSL_ERROR_WANT_WRITE)
-            return ReadFrameResult::wait;
-        if (ssl_error == SSL_ERROR_ZERO_RETURN)
-            return ReadFrameResult::closed;
-        return ReadFrameResult::error;
+            if (payload_result == ReadAllResult::wait)
+                return ReadFrameResult::wait;
+            if (payload_result == ReadAllResult::closed)
+                return ReadFrameResult::closed;
+            return ReadFrameResult::error;
+        }
     }
     return ReadFrameResult::ok;
 }
@@ -405,34 +446,6 @@ void fill_stream_info(StubTunnel *tunnel, Bambu_StreamInfo *info)
     info->format.video.frame_rate = 15;
     info->format_type = tunnel && !tunnel->stream_is_mjpeg ? video_avc_byte_stream : video_jpeg;
     info->max_frame_size = static_cast<int>(tunnel ? tunnel->max_frame_size : 1024 * 1024);
-}
-
-ReadFrameResult prefetch_stream_info_sample(StubTunnel *tunnel)
-{
-    if (!tunnel || tunnel->first_sample_ready)
-        return ReadFrameResult::ok;
-
-    FrameHeader header{};
-    std::vector<uint8_t> payload;
-    ReadFrameResult result = read_frame(tunnel, header, payload);
-    if (result != ReadFrameResult::ok)
-        return result;
-
-    tunnel->first_sample = std::move(payload);
-    tunnel->first_decode_time = header.sequence;
-    tunnel->first_sample_ready = true;
-    tunnel->read_wait_count = 0;
-    tunnel->stream_is_mjpeg = looks_like_jpeg(tunnel->first_sample) ||
-                              !looks_like_h264_annexb(tunnel->first_sample);
-    tunnel->stream_info_known = true;
-    tunnel->max_frame_size = std::max<uint32_t>(
-        1024 * 1024,
-        static_cast<uint32_t>(tunnel->first_sample.size()));
-    log_line("prefetch_stream_info_sample codec=" + std::string(stream_codec_name(tunnel)) +
-             " size=" + std::to_string(tunnel->first_sample.size()) +
-             " kind=" + std::to_string(header.kind) +
-             " sequence=" + std::to_string(header.sequence));
-    return ReadFrameResult::ok;
 }
 
 void close_local(StubTunnel *tunnel)
@@ -474,6 +487,10 @@ int connect_local(StubTunnel *tunnel)
     tv.tv_sec = 1;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    int buffer_size = 2 * 1024 * 1024;
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buffer_size, sizeof(buffer_size));
     if (connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
         close(fd);
         set_error("ARM64 BambuSource TCP connect failed");
@@ -653,22 +670,9 @@ extern "C" int Bambu_GetStreamInfo(Bambu_Tunnel tunnel, int index, Bambu_StreamI
     }
 
     if (!stub->stream_info_known && stub->live_control_sent) {
-        ReadFrameResult result = ReadFrameResult::wait;
-        for (int attempt = 0; attempt < 3 && result == ReadFrameResult::wait; ++attempt)
-            result = prefetch_stream_info_sample(stub);
-        if (result == ReadFrameResult::closed) {
-            set_error("ARM64 BambuSource local stream closed before stream info");
-            return Bambu_stream_end;
-        }
-        if (result == ReadFrameResult::error) {
-            set_error("ARM64 BambuSource local stream info read failed");
-            return Bambu_stream_end;
-        }
-        if (result == ReadFrameResult::wait) {
-            stub->stream_is_mjpeg = true;
-            stub->stream_info_known = true;
-            log_line("Bambu_GetStreamInfo no prefetch sample, defaulting codec=mjpeg");
-        }
+        stub->stream_is_mjpeg = true;
+        stub->stream_info_known = true;
+        log_line("Bambu_GetStreamInfo defaulting codec=mjpeg without blocking prefetch");
     }
 
     fill_stream_info(stub, info);
@@ -728,6 +732,13 @@ extern "C" int Bambu_ReadSample(Bambu_Tunnel tunnel, Bambu_Sample *sample)
     }
     stub->read_wait_count = 0;
     stub->first_sample = std::move(payload);
+    if (stub->sample_count == 0) {
+        stub->stream_is_mjpeg = looks_like_jpeg(stub->first_sample) ||
+                                !looks_like_h264_annexb(stub->first_sample);
+        stub->max_frame_size = std::max<uint32_t>(
+            stub->max_frame_size,
+            static_cast<uint32_t>(stub->first_sample.size()));
+    }
     sample->itrack = 0;
     sample->size = static_cast<int>(stub->first_sample.size());
     sample->flags = stub->stream_is_mjpeg ? f_sync : 0;
