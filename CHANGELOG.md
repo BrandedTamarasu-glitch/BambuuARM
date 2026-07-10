@@ -4,6 +4,13 @@ All notable release changes for this project are documented here.
 
 ## Unreleased
 
+No unreleased changes yet.
+
+## v0.1.4-arm64-lan - 2026-07-10
+
+Source-only ARM64 LAN performance and stability release focused on liveview,
+selected-printer reconnect, and FTPS upload setup.
+
 ### Changed
 
 - Stabilized LAN print status callbacks by keeping per-send status updates
@@ -25,6 +32,8 @@ All notable release changes for this project are documented here.
 - Verified required exported symbols after each phase.
 - Confirmed local liveview and selected-printer reconnect behavior on the
   maintainer ARM64 LAN setup.
+- Confirmed FTPS file send and local `project_file` publish after the upload
+  setup changes.
 
 ## v0.1.3-arm64-lan - 2026-07-08
 

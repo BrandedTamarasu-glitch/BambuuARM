@@ -166,7 +166,7 @@ Release validation checklist:
 docs/testing.md
 ```
 
-The `v0.1.3-arm64-lan` release was validated by:
+The `v0.1.4-arm64-lan` release was validated by:
 
 - Running the guided installer end to end on the maintainer ARM64 system.
 - Verifying a fresh clone can build, verify exports, run doctor mode, and run
@@ -174,9 +174,10 @@ The `v0.1.3-arm64-lan` release was validated by:
 - Confirming restore refuses to continue while Bambu Studio appears to be
   running.
 - Passing the GitHub Actions syntax workflow.
+- Confirming local liveview, selected-printer reconnect, FTPS file send, and
+  local `project_file` publish after the v0.1.4 latency and stability changes.
 
-Current `main` also includes post-v0.1.3 liveview, reconnect, and FTPS upload
-latency work. When validating those changes, record the timing fields described
+When validating performance-sensitive paths, record the timing fields described
 in `docs/testing.md`, especially `connect ok ... elapsed_ms=...` and
 `ftps upload ok ... total_ms=...`.
 
