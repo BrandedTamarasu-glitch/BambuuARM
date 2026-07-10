@@ -4,7 +4,27 @@ All notable release changes for this project are documented here.
 
 ## Unreleased
 
-No unreleased changes yet.
+### Changed
+
+- Stabilized LAN print status callbacks by keeping per-send status updates
+  synchronous with Bambu Studio's print workflow.
+- Improved local LAN liveview startup and playback stability by preserving
+  partial TLS frame reads, avoiding blocking stream-info prefetch, tuning the
+  liveview socket, and reducing per-frame read-path churn.
+- Improved selected-printer connect/reconnect latency by connecting directly to
+  secure LAN MQTT on port `8883` and using immediate reconnect attempts for
+  explicit refresh paths.
+- Improved FTPS upload diagnostics and first-upload setup by reusing persisted
+  pinned certificate material when valid, using a single-CWD FTP method, and
+  logging upload timing fields.
+
+### Validation
+
+- Rebuilt and installed the ARM64 shims locally after the liveview and
+  connect/reconnect phases.
+- Verified required exported symbols after each phase.
+- Confirmed local liveview and selected-printer reconnect behavior on the
+  maintainer ARM64 LAN setup.
 
 ## v0.1.3-arm64-lan - 2026-07-08
 

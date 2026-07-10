@@ -166,7 +166,7 @@ Release validation checklist:
 docs/testing.md
 ```
 
-The `v0.1.2-arm64-lan` release was validated by:
+The `v0.1.3-arm64-lan` release was validated by:
 
 - Running the guided installer end to end on the maintainer ARM64 system.
 - Verifying a fresh clone can build, verify exports, run doctor mode, and run
@@ -174,6 +174,11 @@ The `v0.1.2-arm64-lan` release was validated by:
 - Confirming restore refuses to continue while Bambu Studio appears to be
   running.
 - Passing the GitHub Actions syntax workflow.
+
+Current `main` also includes post-v0.1.3 liveview, reconnect, and FTPS upload
+latency work. When validating those changes, record the timing fields described
+in `docs/testing.md`, especially `connect ok ... elapsed_ms=...` and
+`ftps upload ok ... total_ms=...`.
 
 ## Manual And Developer Commands
 
@@ -257,11 +262,13 @@ end-user release artifacts.
 - If Studio does not load the plugin, run `./guided-install.sh --doctor`, then
   `./verify-exports.sh`.
 - If liveview opens but stays blank, inspect `arm64_bambu_source.log` for
-  `prefetch_stream_info_sample codec=mjpeg size=...`.
+  `Bambu_StartStream`, `Bambu_GetStreamInfo`, `Bambu_ReadSample waiting`, and
+  read-frame error lines. Enable `BAMBU_ARM_VERBOSE_LOG=1` only when detailed
+  liveview read diagnostics are needed.
 - If a connection fails after a printer certificate change, remove the matching
   entry from `arm64_trusted_tls_pins.txt` while on a trusted LAN.
 - If upload or local print fails, inspect `arm64_network_stub.log` for the FTPS
-  path and MQTT command result.
+  path, upload timing fields, and MQTT command result.
 - Re-run `./guided-install.sh` after rebuilding; Bambu Studio loads the
   installed plugin copies from its Flatpak config directory.
 

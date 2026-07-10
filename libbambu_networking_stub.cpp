@@ -248,6 +248,65 @@ bool check_or_store_pin_file(const std::string &path, const std::string &key,
     return true;
 }
 
+bool pin_file_contains(const std::string &path, const std::string &key,
+                       const std::string &fingerprint)
+{
+    std::ifstream in(path);
+    std::string line;
+    while (std::getline(in, line)) {
+        std::istringstream parts(line);
+        std::string stored_key;
+        std::string stored_fp;
+        if (parts >> stored_key >> stored_fp) {
+            if (stored_key == key && stored_fp == fingerprint)
+                return true;
+        }
+    }
+    return false;
+}
+
+bool read_cert_pem_details(const std::string &path, std::string &fingerprint, std::string &spki_pin)
+{
+    FILE *file = std::fopen(path.c_str(), "r");
+    if (!file)
+        return false;
+    X509 *cert = PEM_read_X509(file, nullptr, nullptr, nullptr);
+    std::fclose(file);
+    if (!cert)
+        return false;
+    fingerprint = cert_fingerprint_hex(cert);
+    spki_pin = cert_spki_pin(cert);
+    X509_free(cert);
+    return !fingerprint.empty() && !spki_pin.empty();
+}
+
+bool load_persisted_tls_pin(Agent *agent, const std::string &host, int port,
+                            std::string &spki_pin, std::string &ca_cert_path)
+{
+    const std::string store = trust_store_path(agent);
+    const std::string key = host + ":" + std::to_string(port);
+    std::ifstream in(store);
+    std::string line;
+    while (std::getline(in, line)) {
+        std::istringstream parts(line);
+        std::string stored_key;
+        std::string fingerprint;
+        if (!(parts >> stored_key >> fingerprint) || stored_key != key || fingerprint.empty())
+            continue;
+        const std::string candidate_path = store + "." + fingerprint + ".pem";
+        std::string cert_fingerprint;
+        std::string cert_spki_pin;
+        if (read_cert_pem_details(candidate_path, cert_fingerprint, cert_spki_pin) &&
+            cert_fingerprint == fingerprint &&
+            pin_file_contains(store, key, fingerprint)) {
+            spki_pin = cert_spki_pin;
+            ca_cert_path = candidate_path;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool write_cert_pem(const std::string &path, X509 *cert, std::string &error)
 {
     FILE *file = std::fopen(path.c_str(), "w");
@@ -365,6 +424,16 @@ bool ftps_tls_pin_for_upload(Agent *agent, const std::string &host, int port,
             log_debug(agent, "ftps pin cache hit host=" + masked_len(host) + " port=" + std::to_string(port));
             return true;
         }
+    }
+
+    if (load_persisted_tls_pin(agent, host, port, spki_pin, ca_cert_path)) {
+        std::lock_guard<std::mutex> lock(agent->cert_mutex);
+        agent->ftps_pin_host = host;
+        agent->ftps_pin_port = port;
+        agent->ftps_spki_pin = spki_pin;
+        agent->ftps_ca_cert_path = ca_cert_path;
+        log_line(agent, "ftps pin persisted cache hit host=" + masked_len(host) + " port=" + std::to_string(port));
+        return true;
     }
 
     if (!fetch_tls_pin(agent, host, port, spki_pin, ca_cert_path, error))
@@ -845,6 +914,7 @@ bool ftps_upload_file(Agent *agent, const BBL::PrintParams &params, const std::s
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_FTP_CREATE_MISSING_DIRS, CURLFTP_CREATE_DIR_RETRY);
+    curl_easy_setopt(curl, CURLOPT_FTP_FILEMETHOD, CURLFTPMETHOD_SINGLECWD);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
@@ -858,11 +928,21 @@ bool ftps_upload_file(Agent *agent, const BBL::PrintParams &params, const std::s
                     " bytes=" + std::to_string(std::max<long>(file_size, 0)));
     const CURLcode rc = curl_easy_perform(curl);
     long response = 0;
+    double total_time = 0.0;
+    double connect_time = 0.0;
+    double appconnect_time = 0.0;
+    curl_off_t speed_upload = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response);
+    curl_easy_getinfo(curl, CURLINFO_TOTAL_TIME, &total_time);
+    curl_easy_getinfo(curl, CURLINFO_CONNECT_TIME, &connect_time);
+    curl_easy_getinfo(curl, CURLINFO_APPCONNECT_TIME, &appconnect_time);
+    curl_easy_getinfo(curl, CURLINFO_SPEED_UPLOAD_T, &speed_upload);
     if (rc != CURLE_OK) {
         error = std::string("curl ") + curl_easy_strerror(rc) + " response=" + std::to_string(response);
         log_line(agent, "ftps upload failed dev_id=" + masked_len(params.dev_id) +
-                        " remote=" + path_basename(remote_path) + " error=" + error);
+                        " remote=" + path_basename(remote_path) +
+                        " total_ms=" + std::to_string(static_cast<long long>(total_time * 1000.0)) +
+                        " error=" + error);
         curl_easy_cleanup(curl);
         std::fclose(file);
         return false;
@@ -871,7 +951,11 @@ bool ftps_upload_file(Agent *agent, const BBL::PrintParams &params, const std::s
     curl_easy_cleanup(curl);
     std::fclose(file);
     log_line(agent, "ftps upload ok dev_id=" + masked_len(params.dev_id) +
-                    " remote=" + path_basename(remote_path));
+                    " remote=" + path_basename(remote_path) +
+                    " total_ms=" + std::to_string(static_cast<long long>(total_time * 1000.0)) +
+                    " connect_ms=" + std::to_string(static_cast<long long>(connect_time * 1000.0)) +
+                    " tls_ms=" + std::to_string(static_cast<long long>(appconnect_time * 1000.0)) +
+                    " speed_Bps=" + std::to_string(static_cast<long long>(speed_upload)));
     return true;
 }
 

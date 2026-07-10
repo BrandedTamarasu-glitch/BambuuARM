@@ -13,6 +13,7 @@ Record these details in the issue or report:
 - Printer model and firmware version.
 - Whether Bambu Studio is installed as Flatpak.
 - Whether the printer was discovered automatically or seeded manually.
+- Approximate LAN type, for example wired, Wi-Fi 5, Wi-Fi 6, or unknown.
 
 Do not post LAN access codes, raw config files, or unredacted logs.
 
@@ -48,7 +49,13 @@ Expected result:
 - Studio starts without plugin load errors.
 - The printer can be selected.
 - Printer status updates over LAN MQTT.
-- `arm64_network_stub.log` shows `connect ok` and a `pushall` refresh.
+- `arm64_network_stub.log` shows `connect ok ... elapsed_ms=...` and a
+  `pushall` refresh.
+
+Record:
+
+- `connect ok` `elapsed_ms`.
+- Whether the first status update arrived without reselecting the printer.
 
 Close Bambu Studio before running install or restore commands. The guided
 installer should refuse to replace active plugin files while Studio is running
@@ -69,6 +76,15 @@ Expected result:
 - The remote filename is readable.
 - The `gcode_param` points at an embedded 3MF metadata G-code path.
 - Studio does not report that the printer cannot parse the uploaded file.
+- `arm64_network_stub.log` shows
+  `ftps upload ok ... total_ms=... connect_ms=... tls_ms=... speed_Bps=...`.
+
+Record:
+
+- First upload `total_ms`, `connect_ms`, `tls_ms`, and `speed_Bps` after
+  launching Studio.
+- Repeat upload `total_ms`, `connect_ms`, `tls_ms`, and `speed_Bps` in the same
+  Studio session, if a second low-risk send is practical.
 
 ## Liveview
 
@@ -81,6 +97,13 @@ Expected result:
 - Studio transitions to playing.
 - Frames appear.
 - `arm64_bambu_source.log` does not repeatedly report no frames.
+
+Record:
+
+- Approximate time from opening liveview to first visible frame.
+- Whether playback remains smooth enough to inspect the print during the
+  60-second window.
+- Any repeated `Bambu_ReadSample waiting` or read-frame error lines.
 
 ## Sleep And Resume
 
@@ -95,6 +118,12 @@ Expected result:
 - Studio does not require a full restart.
 - Status refreshes after reconnect.
 - Selecting the printer reconnects promptly if the UI lost selection.
+
+Record:
+
+- Whether the selected printer remains selected after resume.
+- Time from resume or reselect to fresh status, using
+  `connect ok ... elapsed_ms=...` when a reconnect occurs.
 
 ## Diagnostic Bundle
 
